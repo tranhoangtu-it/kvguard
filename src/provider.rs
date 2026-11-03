@@ -3,16 +3,20 @@
 use serde::{Deserialize, Serialize};
 
 /// Wire format of an intercepted LLM request, derived from the request path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiKind {
     /// Anthropic `/v1/messages`.
+    #[value(name = "anthropic")]
     AnthropicMessages,
     /// OpenAI-compatible `/v1/chat/completions` (OpenAI, llama-server, vLLM, LM Studio).
+    #[value(name = "openai-chat")]
     OpenAiChat,
     /// OpenAI `/v1/responses`.
+    #[value(name = "openai-responses")]
     OpenAiResponses,
     /// Ollama native `/api/chat`.
+    #[value(name = "ollama")]
     OllamaChat,
 }
 

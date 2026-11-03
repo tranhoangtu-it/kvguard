@@ -175,7 +175,9 @@ impl SessionTree {
                 continue;
             }
             let overlap = message_overlap(parent, snap);
-            if overlap >= MUTATION_OVERLAP_THRESHOLD
+            let same_conversation =
+                overlap >= MUTATION_OVERLAP_THRESHOLD || same_anchor(parent, snap);
+            if same_conversation
                 && best_mutation.is_none_or(|(_, o, l)| (overlap, lcp) > (o, l))
             {
                 best_mutation = Some((idx, overlap, lcp));
@@ -238,6 +240,22 @@ pub fn common_prefix_len(a: &[ContextBlock], b: &[ContextBlock]) -> usize {
         .count()
 }
 
+/// Same system prompt and same opening message: the same conversation even when a later
+/// message was rewritten (short histories fall below the overlap threshold after one edit).
+fn same_anchor(parent: &Snapshot, snap: &Snapshot) -> bool {
+    let system = |s: &Snapshot| -> Vec<u64> {
+        s.blocks
+            .iter()
+            .filter(|b| b.kind == BlockKind::System)
+            .map(|b| b.hash)
+            .collect()
+    };
+    let first_message = |s: &Snapshot| s.message_hashes().next();
+    first_message(parent).is_some()
+        && first_message(parent) == first_message(snap)
+        && system(parent) == system(snap)
+}
+
 /// Fraction of the parent's message blocks that appear (anywhere) in the new request.
 fn message_overlap(parent: &Snapshot, snap: &Snapshot) -> f64 {
     let current: HashSet<u64> = snap.message_hashes().collect();
@@ -289,6 +307,15 @@ mod tests {
         let out = tree.observe(snap(convo("S2", &["a", "b", "c", "d", "e"])));
         assert_eq!(out.kind, MatchKind::Mutation);
         assert_eq!(out.common_blocks, 0);
+    }
+
+    #[test]
+    fn rewritten_message_in_short_history_is_mutation() {
+        let mut tree = SessionTree::new();
+        tree.observe(snap(convo("S", &["task", "long answer", "go"])));
+        let out = tree.observe(snap(convo("S", &["task", "[compacted]", "go", "ok", "next"])));
+        assert_eq!(out.kind, MatchKind::Mutation);
+        assert_eq!(out.branch_label, "main");
     }
 
     #[test]

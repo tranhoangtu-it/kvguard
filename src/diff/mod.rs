@@ -93,6 +93,44 @@ pub fn diagnose(
     ))
 }
 
+/// Token-level result for one turn: estimated sizes plus a diagnosis when the prefix broke.
+#[derive(Debug, Clone, Default)]
+pub struct Analysis {
+    pub diagnosis: Option<Diagnosis>,
+    pub est_prompt_tokens: u64,
+    pub est_reused_tokens: u64,
+}
+
+/// Analyze a turn against its parent (if any). CPU-bound: run off the async runtime.
+pub fn analyze(
+    parent: Option<&Snapshot>,
+    current: &Snapshot,
+    jinja: Option<&JinjaVerifier>,
+) -> Analysis {
+    let current_text = prompt_text(&current.blocks);
+    let Some(parent) = parent else {
+        return Analysis {
+            diagnosis: None,
+            est_prompt_tokens: token_diff::count_tokens(&current_text) as u64,
+            est_reused_tokens: 0,
+        };
+    };
+    let diagnosis = diagnose(parent, current, jinja);
+    let parent_text = prompt_text(&parent.blocks);
+    let common = token_diff::common_prefix_bytes(&parent_text, &current_text);
+    let reused = match &diagnosis {
+        Some(d) => d.divergence_token,
+        None => token_diff::count_tokens(&current_text[..common]),
+    };
+    let est_prompt_tokens = (token_diff::count_tokens(&current_text[..common])
+        + token_diff::count_tokens(&current_text[common..])) as u64;
+    Analysis {
+        est_reused_tokens: (reused as u64).min(est_prompt_tokens),
+        est_prompt_tokens,
+        diagnosis,
+    }
+}
+
 fn build(
     kind: MutationKind,
     json_path: String,
