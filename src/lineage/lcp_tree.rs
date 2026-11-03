@@ -106,8 +106,15 @@ impl SessionTree {
     }
 
     /// Enable llama-server slot routing with `slots` parallel slots.
+    /// Idempotent: re-detecting the same slot count keeps current assignments.
     pub fn set_slots(&mut self, slots: u32) {
-        self.slots = SlotPool::new(slots);
+        let unchanged = self
+            .slots
+            .as_ref()
+            .is_some_and(|pool| pool.slot_count() == slots as usize);
+        if !unchanged {
+            self.slots = SlotPool::new(slots);
+        }
     }
 
     pub fn branch_count(&self) -> usize {

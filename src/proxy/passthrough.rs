@@ -90,6 +90,7 @@ pub struct UsageCollector {
     body: Vec<u8>,
     usage: Usage,
     found: bool,
+    overflowed: bool,
 }
 
 impl UsageCollector {
@@ -108,12 +109,17 @@ impl UsageCollector {
             body: Vec::new(),
             usage: Usage::default(),
             found: false,
+            overflowed: false,
         }
     }
 
     pub fn feed(&mut self, chunk: &[u8]) {
         if self.framing == Framing::Whole {
-            if self.body.len() + chunk.len() <= MAX_PARSE_BODY {
+            // Once over the cap, stop for good: appending a later small chunk would leave a gap.
+            if self.overflowed || self.body.len() + chunk.len() > MAX_PARSE_BODY {
+                self.overflowed = true;
+                self.body.clear();
+            } else {
                 self.body.extend_from_slice(chunk);
             }
             return;

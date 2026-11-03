@@ -40,12 +40,7 @@ pub fn add_anthropic_breakpoints(body: &mut Value) -> Option<String> {
         added += usize::from(mark(last_tool));
     }
     if let Some(system) = body.get_mut("system") {
-        if let Value::String(text) = system {
-            *system = json!([{"type": "text", "text": text.clone()}]);
-        }
-        if let Some(last) = system.as_array_mut().and_then(|p| p.last_mut()) {
-            added += usize::from(mark(last));
-        }
+        added += usize::from(mark_content(system));
     }
     if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
         let len = messages.len();
@@ -72,19 +67,33 @@ fn mark(block: &mut Value) -> bool {
 }
 
 fn mark_message(message: &mut Value) -> bool {
-    let Some(content) = message.get_mut("content") else {
-        return false;
-    };
+    message.get_mut("content").is_some_and(mark_content)
+}
+
+/// Mark the last cacheable block of a string or content-block array.
+fn mark_content(content: &mut Value) -> bool {
     if let Value::String(text) = content {
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return false;
         }
         *content = json!([{"type": "text", "text": text.clone()}]);
     }
     content
         .as_array_mut()
-        .and_then(|parts| parts.last_mut())
+        .and_then(|parts| parts.iter_mut().rev().find(|p| is_cacheable(p)))
         .is_some_and(mark)
+}
+
+/// Anthropic rejects `cache_control` on empty text and on thinking blocks.
+fn is_cacheable(block: &Value) -> bool {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => block
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|t| !t.trim().is_empty()),
+        Some("tool_use" | "tool_result" | "image" | "document") => true,
+        _ => false,
+    }
 }
 
 /// Set a stable `prompt_cache_key` derived from model + tools + system prefix when absent.
@@ -146,6 +155,24 @@ mod tests {
         assert_eq!(count_breakpoints(&body), 4);
         assert!(body["messages"][2]["content"][0]["cache_control"].is_object());
         assert!(body["messages"][0]["content"][0]["cache_control"].is_object());
+    }
+
+    #[test]
+    fn skips_empty_and_thinking_blocks() {
+        let mut body = json!({
+            "system": "",
+            "messages": [{"role": "assistant", "content": [
+                {"type": "text", "text": "answer"},
+                {"type": "thinking", "thinking": "…", "signature": "sig"},
+                {"type": "text", "text": "  "}
+            ]}]
+        });
+        assert!(add_anthropic_breakpoints(&mut body).is_some());
+        assert_eq!(body["system"], json!(""));
+        let parts = &body["messages"][0]["content"];
+        assert!(parts[0]["cache_control"].is_object());
+        assert!(parts[1].get("cache_control").is_none());
+        assert!(parts[2].get("cache_control").is_none());
     }
 
     #[test]

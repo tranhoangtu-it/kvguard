@@ -312,13 +312,18 @@ impl Monitor {
             };
             let before = Totals::of(&inner.turns[pos]);
             let record = &mut inner.turns[pos];
+            let usage_before = record.usage.clone();
             change(record);
             refresh_record(record, tok_per_sec);
             let after = Totals::of(record);
-            let usage = record.usage.clone();
+            // Calibrate only from a newly reported usage, never twice for the same turn.
+            let new_usage = record
+                .usage
+                .clone()
+                .filter(|u| Some(u) != usage_before.as_ref());
             inner.totals.sub(&before);
             inner.totals.add(&after);
-            usage
+            new_usage
         };
         if let Some(usage) = usage {
             self.observe_prefill(&usage);

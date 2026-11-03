@@ -79,7 +79,9 @@ impl ApiKind {
 pub enum Backend {
     /// The official Anthropic API (billing header must be preserved).
     AnthropicCloud,
-    /// OpenAI or another hosted provider.
+    /// The official OpenAI API (`api.openai.com`).
+    OpenAiCloud,
+    /// Any other hosted provider or gateway.
     HostedCloud,
     /// llama.cpp `llama-server` exposing `slots` parallel KV slots.
     LlamaCpp { slots: u32 },

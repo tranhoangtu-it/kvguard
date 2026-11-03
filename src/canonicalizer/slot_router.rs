@@ -22,6 +22,10 @@ impl SlotPool {
         })
     }
 
+    pub fn slot_count(&self) -> usize {
+        self.owners.len()
+    }
+
     /// Assign a slot to `branch_id`. `clock` is a monotonically increasing request counter.
     pub fn assign(&mut self, branch_id: u64, is_main: bool, clock: u64) -> u32 {
         let secondary = 1..self.owners.len();

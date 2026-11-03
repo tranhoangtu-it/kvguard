@@ -18,6 +18,12 @@ pub static TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid regex")
 });
+/// ISO-8601 date-times only. Healing pins these; bare 10/13-digit numbers may be ids, so they
+/// are diagnosed but never rewritten.
+pub static ISO_TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
+        .expect("valid regex")
+});
 static GIT_STATUS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)gitStatus:.*\z").expect("valid regex"));
 static THINK_BLOCK: LazyLock<Regex> =
@@ -127,10 +133,10 @@ pub fn pin_timestamps(api: ApiKind, body: &mut Value, pinned: &mut Vec<String>) 
     let mut index = 0usize;
     let mut replaced = 0usize;
     for_each_system_text(api, body, |text| {
-        if !TIMESTAMP.is_match(text) {
+        if !ISO_TIMESTAMP.is_match(text) {
             return;
         }
-        let updated = TIMESTAMP.replace_all(text, |caps: &regex::Captures| {
+        let updated = ISO_TIMESTAMP.replace_all(text, |caps: &regex::Captures| {
             let current = caps[0].to_string();
             let value = match pinned.get(index) {
                 Some(stored) => stored.clone(),

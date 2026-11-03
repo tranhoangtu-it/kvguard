@@ -73,23 +73,43 @@ impl Healer {
 
     /// Move `gitStatus:` out of the system prompt into the newest user/tool turn, and replay
     /// previously appended sections on historical turns so the history stays byte-identical.
+    ///
+    /// Sections are remembered per conversation prefix (hash chain of every message up to and
+    /// including the target), so identical short messages ("continue") in different positions
+    /// or sessions never receive each other's git state.
     fn relocate_git_status(&self, api: ApiKind, body: &mut Value) -> Option<String> {
+        let key = conversation_key(api);
+        // Without a newest user/tool turn to carry the section, leave the request untouched
+        // rather than dropping the git status.
+        let can_carry = body.get(key)?.as_array()?.last().is_some_and(|m| {
+            is_role(m, &["user", "tool"])
+                && m.get("content")
+                    .is_some_and(|c| c.is_string() || c.is_array())
+        });
+        if !can_carry {
+            return None;
+        }
         let section = sanitizer::take_git_status(api, body);
-        let messages = body.get_mut(conversation_key(api))?.as_array_mut()?;
+        let messages = body.get_mut(key)?.as_array_mut()?;
         let last_idx = messages.len().checked_sub(1)?;
         let mut tails = self.git_tails.lock().ok()?;
         if tails.len() > MAX_REMEMBERED {
             tails.clear();
         }
+        let mut prefix = 0u64;
         for (i, message) in messages.iter_mut().enumerate() {
+            // Chain over original (pre-append) content.
+            let link = [prefix.to_le_bytes(), message_hash(message).to_le_bytes()].concat();
+            prefix = xxh64(&link, 0);
             if !is_role(message, &["user", "tool"]) {
                 continue;
             }
-            let hash = message_hash(message);
-            if let Some(stored) = tails.get(&hash) {
+            if let Some(stored) = tails.get(&prefix) {
                 sanitizer::append_to_message(message, stored, api);
-            } else if let (true, Some(section)) = (i == last_idx, section.as_ref()) {
-                tails.insert(hash, section.clone());
+            } else if i == last_idx
+                && let Some(section) = section.as_ref()
+            {
+                tails.insert(prefix, section.clone());
                 sanitizer::append_to_message(message, section, api);
             }
         }
@@ -109,7 +129,8 @@ pub fn apply_routing_rules(
         ApiKind::AnthropicMessages if !backend.is_local() => {
             actions.extend(breakpoints::add_anthropic_breakpoints(body));
         }
-        ApiKind::OpenAiChat | ApiKind::OpenAiResponses if backend == Backend::HostedCloud => {
+        // Unknown fields can be rejected by strict gateways, so only the official API gets it.
+        ApiKind::OpenAiChat | ApiKind::OpenAiResponses if backend == Backend::OpenAiCloud => {
             actions.extend(breakpoints::add_prompt_cache_key(body));
         }
         _ => {}
@@ -126,13 +147,14 @@ fn message_hash(message: &Value) -> u64 {
     xxh64(strip_cache_control(message).to_string().as_bytes(), 0)
 }
 
-/// Hash of model + system texts with timestamps masked: identifies "the same system prompt".
+/// Identifies one session's system prompt: model + system texts with ISO timestamps masked +
+/// the opening conversation message (so concurrent sessions don't share pinned values).
 fn system_shape_hash(api: ApiKind, body: &mut Value) -> Option<u64> {
     let mut shape = String::new();
     let mut has_timestamp = false;
     sanitizer::for_each_system_text(api, body, |text| {
-        has_timestamp |= sanitizer::TIMESTAMP.is_match(text);
-        shape.push_str(&sanitizer::mask_timestamps(text));
+        has_timestamp |= sanitizer::ISO_TIMESTAMP.is_match(text);
+        shape.push_str(&sanitizer::ISO_TIMESTAMP.replace_all(text, "<ts>"));
         shape.push('\u{0}');
     });
     if !has_timestamp {
@@ -143,6 +165,13 @@ fn system_shape_hash(api: ApiKind, body: &mut Value) -> Option<u64> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     shape.push_str(model);
+    let opening = body
+        .get(conversation_key(api))
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|m| !is_role(m, &["system", "developer"])))
+        .map(message_hash)
+        .unwrap_or(0);
+    shape.push_str(&opening.to_string());
     Some(xxh64(shape.as_bytes(), 0))
 }
 
@@ -198,5 +227,52 @@ mod tests {
                 .unwrap()
                 .ends_with("M b.rs")
         );
+    }
+
+    #[test]
+    fn repeated_short_message_gets_fresh_git_status() {
+        let healer = Healer::new();
+        let api = ApiKind::AnthropicMessages;
+        let backend = Backend::LocalGeneric;
+        let mut turn1 = json!({"system": "Core.\ngitStatus: S1",
+            "messages": [{"role": "user", "content": "continue"}]});
+        healer.apply_prefix_rules(api, backend, &mut turn1, &opts());
+        let mut turn2 = json!({"system": "Core.\ngitStatus: S2",
+        "messages": [
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "continue"}
+        ]});
+        healer.apply_prefix_rules(api, backend, &mut turn2, &opts());
+
+        let text = |i: usize| {
+            turn2["messages"][i]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            text(0).ends_with("S1"),
+            "history keeps its original section"
+        );
+        assert!(
+            text(2).ends_with("S2"),
+            "newest turn gets the current section"
+        );
+    }
+
+    #[test]
+    fn git_status_is_kept_when_no_turn_can_carry_it() {
+        let healer = Healer::new();
+        let mut body = json!({"system": "Core.\ngitStatus: S1",
+            "messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "prefill"}]});
+        let actions = healer.apply_prefix_rules(
+            ApiKind::AnthropicMessages,
+            Backend::LocalGeneric,
+            &mut body,
+            &opts(),
+        );
+        assert!(actions.is_empty());
+        assert_eq!(body["system"], "Core.\ngitStatus: S1");
     }
 }
