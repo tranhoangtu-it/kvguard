@@ -24,8 +24,36 @@ pub static ISO_TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
         .expect("valid regex")
 });
-static GIT_STATUS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)gitStatus:.*\z").expect("valid regex"));
+/// Paragraph labels Claude Code uses inside its `gitStatus:` section.
+const GIT_STATUS_LABELS: &[&str] = &[
+    "Current branch",
+    "Main branch",
+    "Status",
+    "Recent commits",
+    "Git user",
+];
+
+/// Byte range of the `gitStatus:` section: its first paragraph plus following paragraphs that
+/// start with a known git label. Text after the section is left in place.
+fn git_status_range(text: &str) -> Option<std::ops::Range<usize>> {
+    let start = text.find("gitStatus:")?;
+    let first_break = text[start..].find("\n\n").map(|i| start + i);
+    let mut end = first_break.unwrap_or(text.len());
+    while end < text.len() {
+        let next = end + 2;
+        let paragraph_end = text[next..].find("\n\n").map_or(text.len(), |i| next + i);
+        let paragraph = text[next..paragraph_end].trim_start();
+        if !GIT_STATUS_LABELS
+            .iter()
+            .any(|label| paragraph.starts_with(label))
+        {
+            break;
+        }
+        end = paragraph_end;
+    }
+    Some(start..end)
+}
+
 static THINK_BLOCK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<think>.*?</think>\s*").expect("valid regex"));
 
@@ -163,9 +191,9 @@ pub fn take_git_status(api: ApiKind, body: &mut Value) -> Option<String> {
         if taken.is_some() {
             return;
         }
-        if let Some(m) = GIT_STATUS.find(text) {
-            taken = Some(m.as_str().trim_end().to_string());
-            text.replace_range(m.range(), GIT_STATUS_PLACEHOLDER);
+        if let Some(range) = git_status_range(text) {
+            taken = Some(text[range.clone()].trim_end().to_string());
+            text.replace_range(range, GIT_STATUS_PLACEHOLDER);
         }
     });
     taken
@@ -233,6 +261,15 @@ mod tests {
         let action = strip_billing_headers(ApiKind::AnthropicMessages, &mut body);
         assert!(action.is_some());
         assert_eq!(body["system"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn git_status_section_stops_at_unrelated_paragraph() {
+        let text = "Intro.\n\ngitStatus: snapshot\nCurrent branch: main\n\nStatus:\nM a.rs\n\n\
+                    Recent commits:\nabc fix\n\nAlways answer in English.";
+        let range = git_status_range(text).expect("section");
+        assert!(text[range.clone()].ends_with("abc fix"));
+        assert_eq!(&text[range.end..], "\n\nAlways answer in English.");
     }
 
     #[test]

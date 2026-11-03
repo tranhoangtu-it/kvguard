@@ -44,7 +44,7 @@ Prebuilt binaries for Linux (x86_64/aarch64, static musl), macOS (Intel/Apple Si
 cargo install --git https://github.com/tranhoangtu-it/kvguard --locked   # from source
 ```
 
-`npx kvguard` / `uvx kvguard` wrappers are not published yet.
+Launchers for `npx kvguard` and `uvx kvguard` / `pipx run kvguard` live in [`wrappers/`](wrappers): on first run they download the release binary for your platform, verify its SHA-256 checksum and execute it. They are not yet published to npm or PyPI.
 
 Verified end to end against a local Ollama 0.35 (`qwen2.5:7b-instruct`): the second turn of a conversation was classified `HIT`, and Ollama reported 1,619 of 1,635 prompt tokens cached.
 

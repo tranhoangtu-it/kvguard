@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kvguard"
+version = "0.1.0"
+description = "Local proxy & TUI that catches 1-token prompt/KV cache prefix misses and auto-heals requests for Anthropic, OpenAI, llama.cpp and Ollama."
+license = "MIT OR Apache-2.0"
+# 3.12+ guarantees tarfile's safe "data" extraction filter.
+requires-python = ">=3.12"
+keywords = ["llm", "prompt-caching", "kv-cache", "proxy", "claude", "openai", "ollama"]
+classifiers = [
+  "Environment :: Console",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Debuggers",
+]
+
+[project.urls]
+Homepage = "https://github.com/tranhoangtu-it/kvguard"
+
+[project.scripts]
+kvguard = "kvguard.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kvguard"]
