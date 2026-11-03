@@ -167,7 +167,7 @@ impl SessionTree {
             .branches
             .iter()
             .enumerate()
-            .filter(|(_, b)| b.last.api == snap.api && b.last.model == snap.model);
+            .filter(|(_, b)| b.last.api.same_layout(snap.api) && b.last.model == snap.model);
 
         let mut best_continuation: Option<(usize, usize)> = None;
         let mut best_mutation: Option<(usize, f64, usize)> = None;
@@ -324,6 +324,18 @@ mod tests {
         )));
         assert_eq!(out.kind, MatchKind::Mutation);
         assert_eq!(out.branch_label, "main");
+    }
+
+    #[test]
+    fn ollama_native_and_openai_endpoints_share_a_branch() {
+        let mut tree = SessionTree::new();
+        let body = |msgs: Value| json!({"model": "qwen", "messages": msgs});
+        let first = json!([{"role": "user", "content": "a"}]);
+        let second = json!([{"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"}, {"role": "user", "content": "c"}]);
+        tree.observe(Snapshot::new(ApiKind::OpenAiChat, Arc::new(body(first))));
+        let out = tree.observe(Snapshot::new(ApiKind::OllamaChat, Arc::new(body(second))));
+        assert_eq!(out.kind, MatchKind::Continuation);
     }
 
     #[test]

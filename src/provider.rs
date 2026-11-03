@@ -8,19 +8,34 @@ use serde::{Deserialize, Serialize};
 pub enum ApiKind {
     /// Anthropic `/v1/messages`.
     #[value(name = "anthropic")]
+    #[serde(rename = "anthropic")]
     AnthropicMessages,
     /// OpenAI-compatible `/v1/chat/completions` (OpenAI, llama-server, vLLM, LM Studio).
     #[value(name = "openai-chat")]
+    #[serde(rename = "openai_chat")]
     OpenAiChat,
     /// OpenAI `/v1/responses`.
     #[value(name = "openai-responses")]
+    #[serde(rename = "openai_responses")]
     OpenAiResponses,
     /// Ollama native `/api/chat`.
     #[value(name = "ollama")]
+    #[serde(rename = "ollama")]
     OllamaChat,
 }
 
 impl ApiKind {
+    /// Requests of the same family share a prompt layout, so a conversation may move between
+    /// them (e.g. Ollama's native `/api/chat` and its OpenAI-compatible endpoint share one cache).
+    pub fn same_layout(self, other: Self) -> bool {
+        let family = |api: Self| match api {
+            Self::OpenAiChat | Self::OllamaChat => 0,
+            Self::AnthropicMessages => 1,
+            Self::OpenAiResponses => 2,
+        };
+        family(self) == family(other)
+    }
+
     /// Classify a request path. Returns `None` for paths kvguard only passes through.
     pub fn from_path(path: &str) -> Option<Self> {
         let path = path.split('?').next().unwrap_or(path).trim_end_matches('/');
