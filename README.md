@@ -38,11 +38,15 @@ Sub-agent requests and llama-server slots: with `--heal`, the main conversation 
 
 ## Install
 
+Prebuilt binaries for Linux (x86_64/aarch64, static musl), macOS (Intel/Apple Silicon) and Windows (x86_64) are attached to each [GitHub release](https://github.com/tranhoangtu-it/kvguard/releases), with SHA-256 checksums.
+
 ```bash
-cargo install --path .        # from a checkout
+cargo install --git https://github.com/tranhoangtu-it/kvguard --locked   # from source
 ```
 
-Prebuilt binaries and the `npx kvguard` / `uvx kvguard` wrappers are not published yet.
+`npx kvguard` / `uvx kvguard` wrappers are not published yet.
+
+Verified end to end against a local Ollama 0.35 (`qwen2.5:7b-instruct`): the second turn of a conversation was classified `HIT`, and Ollama reported 1,619 of 1,635 prompt tokens cached.
 
 ## Usage
 
