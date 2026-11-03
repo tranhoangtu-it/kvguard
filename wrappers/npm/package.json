@@ -1,0 +1,23 @@
+{
+  "name": "kvguard",
+  "version": "0.1.0",
+  "description": "Local proxy & TUI that catches 1-token prompt/KV cache prefix misses and auto-heals requests for Anthropic, OpenAI, llama.cpp and Ollama.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tranhoangtu-it/kvguard.git"
+  },
+  "keywords": ["llm", "prompt-caching", "kv-cache", "proxy", "claude", "openai", "llama.cpp", "ollama"],
+  "bin": {
+    "kvguard": "bin/kvguard.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": ["bin/", "install.js"],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["x64", "arm64"]
+}
