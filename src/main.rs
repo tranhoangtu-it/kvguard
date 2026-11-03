@@ -86,7 +86,10 @@ async fn headless(monitor: &Monitor, url: &str) -> Result<()> {
             let hit = turn
                 .hit_ratio()
                 .map_or_else(|| "  –".to_string(), |r| format!("{:>3.0}%", r * 100.0));
-            let slot = turn.slot.map(|s| format!(" [slot {s}]")).unwrap_or_default();
+            let slot = turn
+                .slot
+                .map(|s| format!(" [slot {s}]"))
+                .unwrap_or_default();
             let (cause, _) = tui::ui::cause(&turn);
             println!(
                 "#{:02} {}{slot} {} {hit} {cause}",

@@ -116,10 +116,10 @@ impl AppState {
             return *backend;
         }
         let detected = self.detect_backend(base).await;
-        if let Backend::LlamaCpp { slots } = detected {
-            if let Ok(mut tree) = self.tree.lock() {
-                tree.set_slots(slots);
-            }
+        if let Backend::LlamaCpp { slots } = detected
+            && let Ok(mut tree) = self.tree.lock()
+        {
+            tree.set_slots(slots);
         }
         cache.insert(base.to_string(), detected);
         detected
@@ -230,10 +230,10 @@ impl AppState {
                     .map_err(|e| e.to_string())
                     .and_then(|()| file.write_all(b"\n").map_err(|e| e.to_string()))
             });
-        if let Err(err) = written {
-            if !self.record_failed.swap(true, Ordering::Relaxed) {
-                eprintln!("kvguard: recording disabled after write error: {err}");
-            }
+        if let Err(err) = written
+            && !self.record_failed.swap(true, Ordering::Relaxed)
+        {
+            eprintln!("kvguard: recording disabled after write error: {err}");
         }
     }
 }

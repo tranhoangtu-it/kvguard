@@ -1,0 +1,22 @@
+{#- Reduced Qwen3-style chat template: reasoning is rendered only for assistant turns
+    after the last user query, so earlier turns lose their <think> block once a new
+    user message arrives. This reproduces the KV-cache drift seen with Qwen 3 / 3.5. -#}
+{%- set ns = namespace(last_user=-1) -%}
+{%- for m in messages -%}
+{%- if m.role == "user" -%}{%- set ns.last_user = loop.index0 -%}{%- endif -%}
+{%- endfor -%}
+{%- for m in messages -%}
+{%- if m.role == "assistant" -%}
+<|im_start|>assistant
+{% if loop.index0 > ns.last_user and m.reasoning_content %}<think>
+{{ m.reasoning_content }}
+</think>
+
+{% endif %}{{ m.content }}<|im_end|>
+{% else -%}
+<|im_start|>{{ m.role }}
+{{ m.content }}<|im_end|>
+{% endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt %}<|im_start|>assistant
+{% endif -%}

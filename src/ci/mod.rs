@@ -77,9 +77,7 @@ impl CheckReport {
     /// Process exit code for CI.
     pub fn exit_code(&self, opts: &CheckOptions) -> u8 {
         let busted = opts.fail_on_bust && self.busts() > 0;
-        let below = opts
-            .min_hit_rate
-            .is_some_and(|min| self.reuse_rate() < min);
+        let below = opts.min_hit_rate.is_some_and(|min| self.reuse_rate() < min);
         u8::from(busted || below)
     }
 }
@@ -164,9 +162,8 @@ fn load_inputs(patterns: &[String], api_override: Option<ApiKind>) -> Result<Vec
             if line.trim().is_empty() {
                 continue;
             }
-            let value: Value = serde_json::from_str(line).with_context(|| {
-                format!("{}:{} is not valid JSON", path.display(), line_no + 1)
-            })?;
+            let value: Value = serde_json::from_str(line)
+                .with_context(|| format!("{}:{} is not valid JSON", path.display(), line_no + 1))?;
             inputs.push(to_input(
                 format!("{name}:{}", line_no + 1),
                 value,

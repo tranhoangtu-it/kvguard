@@ -24,7 +24,10 @@ pub enum DataSource {
     /// Proxy running in this process.
     Local(Arc<Monitor>),
     /// Proxy in another process (`kvguard attach`).
-    Remote { client: reqwest::Client, url: String },
+    Remote {
+        client: reqwest::Client,
+        url: String,
+    },
 }
 
 impl DataSource {

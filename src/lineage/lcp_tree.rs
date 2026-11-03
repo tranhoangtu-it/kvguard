@@ -177,9 +177,7 @@ impl SessionTree {
             let overlap = message_overlap(parent, snap);
             let same_conversation =
                 overlap >= MUTATION_OVERLAP_THRESHOLD || same_anchor(parent, snap);
-            if same_conversation
-                && best_mutation.is_none_or(|(_, o, l)| (overlap, lcp) > (o, l))
-            {
+            if same_conversation && best_mutation.is_none_or(|(_, o, l)| (overlap, lcp) > (o, l)) {
                 best_mutation = Some((idx, overlap, lcp));
             }
         }
@@ -313,7 +311,10 @@ mod tests {
     fn rewritten_message_in_short_history_is_mutation() {
         let mut tree = SessionTree::new();
         tree.observe(snap(convo("S", &["task", "long answer", "go"])));
-        let out = tree.observe(snap(convo("S", &["task", "[compacted]", "go", "ok", "next"])));
+        let out = tree.observe(snap(convo(
+            "S",
+            &["task", "[compacted]", "go", "ok", "next"],
+        )));
         assert_eq!(out.kind, MatchKind::Mutation);
         assert_eq!(out.branch_label, "main");
     }

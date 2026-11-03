@@ -2,6 +2,17 @@
 name = "kvguard"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Local proxy & TUI that catches 1-token prompt/KV cache prefix misses and auto-heals requests for Anthropic, OpenAI, llama.cpp and Ollama."
+readme = "README.md"
+keywords = ["llm", "prompt-caching", "kv-cache", "proxy", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
 
 [dependencies]
 anyhow = "1.0.104"
@@ -18,10 +29,8 @@ regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-thiserror = "2.0.21"
 tiktoken-rs = "0.12.1"
 tokio = { version = "1.54.1", features = ["full"] }
-uuid = { version = "1.29.0", features = ["v4"] }
 xxhash-rust = { version = "0.8.19", features = ["xxh64"] }
 
 [dev-dependencies]

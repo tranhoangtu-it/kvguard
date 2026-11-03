@@ -47,7 +47,10 @@ pub fn upstream_request_headers(incoming: &HeaderMap, analyzed: bool) -> HeaderM
         out.append(name.clone(), value.clone());
     }
     if analyzed {
-        out.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        out.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
     }
     out
 }

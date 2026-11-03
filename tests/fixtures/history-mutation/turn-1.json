@@ -1,0 +1,8 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "system": "You are a careful coding agent working in a Rust repository.",
+  "messages": [
+    { "role": "user", "content": "Refactor src/parser.rs so the tokenizer and the AST builder live in separate modules." }
+  ]
+}

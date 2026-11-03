@@ -1,0 +1,10 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "system": "You are a careful coding agent working in a Rust repository.",
+  "messages": [
+    { "role": "user", "content": "Refactor src/parser.rs so the tokenizer and the AST builder live in separate modules." },
+    { "role": "assistant", "content": "I read src/parser.rs. The tokenizer occupies lines 1-240 and the AST builder lines 241-610. I will move the tokenizer into src/parser/tokenizer.rs and keep the public API unchanged." },
+    { "role": "user", "content": "Go ahead, and keep the existing tests passing." }
+  ]
+}

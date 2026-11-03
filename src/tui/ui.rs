@@ -236,10 +236,7 @@ fn diagnosis_lines(turn: &TurnRecord, d: &Diagnosis, view: DiffView) -> Vec<Line
                 Style::new().bold(),
             ),
             Span::raw(format!(" │ JSON Path: {}", d.json_path)),
-            Span::styled(
-                format!(" │ Impact: {impact}"),
-                Style::new().fg(Color::Red),
-            ),
+            Span::styled(format!(" │ Impact: {impact}"), Style::new().fg(Color::Red)),
         ]),
         Line::styled(
             format!(

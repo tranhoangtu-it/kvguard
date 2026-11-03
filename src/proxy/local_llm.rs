@@ -59,12 +59,7 @@ pub async fn probe_llama_slots(client: &reqwest::Client, base: &str) -> Option<u
 }
 
 async fn get_json(client: &reqwest::Client, url: &str) -> Option<Value> {
-    let response = client
-        .get(url)
-        .timeout(PROBE_TIMEOUT)
-        .send()
-        .await
-        .ok()?;
+    let response = client.get(url).timeout(PROBE_TIMEOUT).send().await.ok()?;
     if !response.status().is_success() {
         return None;
     }

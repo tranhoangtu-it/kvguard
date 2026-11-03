@@ -43,7 +43,9 @@ pub fn first_divergence(parent: &Snapshot, current: &Snapshot) -> Option<AstDive
         first_diff_path(&old_value, &new_value, &old_block.path)
             .unwrap_or_else(|| (old_block.path.clone(), String::new(), String::new()));
 
-    let kind = classify(parent, current, old_block, new_block, &old_value, &new_value);
+    let kind = classify(
+        parent, current, old_block, new_block, &old_value, &new_value,
+    );
     Some(AstDivergence {
         block_index: index,
         json_path,
@@ -65,8 +67,9 @@ fn classify(
         return classify_tools(parent, current, old_value, new_value);
     }
     match old_block.kind {
-        BlockKind::System => classify_text_change(old_value, new_value)
-            .unwrap_or(MutationKind::SystemPromptChanged),
+        BlockKind::System => {
+            classify_text_change(old_value, new_value).unwrap_or(MutationKind::SystemPromptChanged)
+        }
         BlockKind::Message => MutationKind::HistoricalMessageMutated,
         BlockKind::Tool => MutationKind::ToolDefinitionChanged,
     }

@@ -189,7 +189,7 @@ pub fn normalize_think_tags(api: ApiKind, body: &mut Value) -> Option<String> {
     let messages = body.get_mut(conversation_key(api))?.as_array_mut()?;
     let mut changed = 0usize;
     for message in messages.iter_mut().filter(|m| is_role(m, &["assistant"])) {
-        let before = message.to_string();
+        let before = message.clone();
         if let Some(map) = message.as_object_mut() {
             map.remove("reasoning_content");
             map.remove("reasoning");
@@ -206,7 +206,7 @@ pub fn normalize_think_tags(api: ApiKind, body: &mut Value) -> Option<String> {
             }
             _ => {}
         }
-        if message.to_string() != before {
+        if *message != before {
             changed += 1;
         }
     }

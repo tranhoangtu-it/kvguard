@@ -114,10 +114,10 @@ pub fn apply_routing_rules(
         }
         _ => {}
     }
-    if let (Backend::LlamaCpp { .. }, Some(slot)) = (backend, slot) {
-        if slot_router::inject_slot(body, slot) {
-            actions.push(format!("pinned id_slot={slot}"));
-        }
+    if let (Backend::LlamaCpp { .. }, Some(slot)) = (backend, slot)
+        && slot_router::inject_slot(body, slot)
+    {
+        actions.push(format!("pinned id_slot={slot}"));
     }
     actions
 }
@@ -183,11 +183,11 @@ mod tests {
         healer.apply_prefix_rules(api, backend, &mut turn1, &opts());
 
         let mut turn2 = json!({"system": "Core.\ngitStatus: M a.rs\nM b.rs",
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "hello"},
-                {"role": "user", "content": "next"}
-            ]});
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "next"}
+        ]});
         healer.apply_prefix_rules(api, backend, &mut turn2, &opts());
 
         assert_eq!(turn1["system"], turn2["system"]);
