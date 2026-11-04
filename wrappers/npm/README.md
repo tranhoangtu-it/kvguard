@@ -14,8 +14,8 @@ kvguard is a local proxy + terminal UI that shows you **where** the prefix broke
 ## Quick start
 
 ```bash
-npx kvguard --heal -- claude                                   # Claude Code
-npx kvguard --heal --target http://127.0.0.1:8080 -- opencode  # any agent → llama-server
+npx kvguard -- claude                                          # Claude Code (observe only)
+npx kvguard --target http://127.0.0.1:8080 -- opencode  # any agent → llama-server
 npx kvguard attach                                             # live TUI in a second terminal
 ```
 
@@ -37,7 +37,7 @@ The first run downloads the native binary for your platform from [GitHub Release
 | tools[] order shuffled | MCP servers starting asynchronously | ✅ sorted by name |
 | schema key order changed | non-deterministic JSON serialization | ✅ RFC 8785 key order |
 | volatile header in system | Claude Code `cch=` billing header on non-Anthropic backends | ✅ stripped |
-| timestamp in prefix | `Current time: …` with seconds | ✅ pinned per session |
+| timestamp in prefix | `Current time: …` with seconds | ⚙️ opt-in `--pin-timestamps` |
 | chat-template drift | Qwen/DeepSeek dropping `<think>` from old turns | ✅ `--normalize-think-tags` |
 | history message mutated | compaction, truncated tool output | 🔎 reported with JSON path |
 | sub-agent evicting main KV slot | llama-server with parallel slots | ✅ main pinned to `id_slot 0` |

@@ -101,7 +101,20 @@ Web dashboard, cơ sở dữ liệu ngoài, semantic/embedding cache, response c
 
 **Quyết định cho các câu hỏi mở:** ngưỡng PARTIAL cấu hình được (mặc định 0.8); bảng ngưỡng tối thiểu dùng giá trị thận trọng (Opus 4096, Haiku/Sonnet 4.6+ 2048, còn lại 1024) — chỉ có thể *giảm* cảnh báo, không tạo cảnh báo sai; không gọi `count_tokens`.
 
-## 7. Câu hỏi còn mở
+## 7. v0.3.0 — sau đánh giá 5 vai (HN, người dùng Claude Code, local LLM, EM, bảo mật)
+
+| Đề xuất | Trạng thái |
+|---|---|
+| Mặc định observe-only; `--heal` chỉ còn quy tắc an toàn; `--pin-timestamps` tách riêng | ✅ |
+| Token cho `/__kvguard/*`, file 0600, attach.json ở thư mục riêng của user | ✅ |
+| Không ghi đè `id_slot` của client; normalize-think chỉ trước lượt user cuối, thêm `<thinking>`/`[THINK]` | ✅ |
+| `check`: dòng Result PASS/FAIL, chú giải ký hiệu, ước tính $/bust | ✅ |
+| Benchmark độ trễ tái lập được (`docs/benchmarks.md`) | ✅ +1.0 ms (inspect) / +1.4 ms (heal) ở p50 cho 80K token |
+| GitHub Action chính thức, metrics có nhãn, `--prices`, nhận diện Ollama qua `/v1` | ✅ |
+| CHANGELOG, SECURITY.md, attestation cho binary, pin action theo SHA | ✅ |
+| Gateway mode + OTLP + Docker, llama-swap, cảnh báo `n_ctx`, save/restore slot, tỉ lệ false-positive trên trace thật | ⏳ roadmap |
+
+## 8. Câu hỏi còn mở
 
 - Ngưỡng PARTIAL (đề xuất 0.8) nên cố định hay cho cấu hình?
 - Bảng ngưỡng tối thiểu theo model cần xác minh với tài liệu chính thức của Anthropic trước khi đưa vào code.
