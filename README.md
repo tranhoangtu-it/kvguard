@@ -93,6 +93,7 @@ npx kvguard --target http://127.0.0.1:11434 -- my-agent   # Ollama
 
 | Method | Command |
 |---|---|
+| Homebrew (macOS, Linux) | `brew install tranhoangtu-it/tap/kvguard` |
 | npm | `npx kvguard …` or `npm i -g kvguard` |
 | Python | `uvx kvguard …` or `pipx run kvguard …` |
 | Binary | [GitHub Releases](https://github.com/tranhoangtu-it/kvguard/releases) — Linux x86_64/arm64 (static musl), macOS Intel/Apple Silicon, Windows x86_64; SHA-256 checksums and build-provenance attestations |

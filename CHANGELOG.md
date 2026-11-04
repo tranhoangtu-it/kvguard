@@ -23,6 +23,8 @@ change CLI flags, metric names and JSON fields; such changes are listed under **
 - `kvguard check` prints a PASS/FAIL result line, a symbol legend and an estimated list-price
   cost per bust; `--prices FILE` overrides list prices (proxy and `check`).
 - Official GitHub Action (`uses: tranhoangtu-it/kvguard@v0.3.0`).
+- Homebrew: `brew install tranhoangtu-it/tap/kvguard`; the release workflow renders the
+  formula from the release checksums, test-installs it on macOS and pushes it to the tap.
 - `kvguard_recent_turns{model,status}` gauge on `/__kvguard/metrics`.
 - Ollama detected behind its OpenAI-compatible `/v1` endpoint.
 - Reproducible latency benchmark (`examples/proxy_overhead.rs`, `docs/benchmarks.md`),
