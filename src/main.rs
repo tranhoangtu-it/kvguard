@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 
-use kvguard::cli::{Cli, Command, ProxyArgs};
-use kvguard::monitor::{Monitor, TurnStatus};
+use kvguard::cli::{Cli, Command, ProxyArgs, StatusArgs};
+use kvguard::monitor::{Monitor, TurnStatus, render_status_line};
 use kvguard::proxy::{self, AppState};
 use kvguard::{ci, tui, wrapper};
 
@@ -41,9 +41,26 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             tui::attach(args.url).await?;
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::Status(args)) => status(args).await,
         None if !cli.wrapped.is_empty() => wrapper::run(&cli.proxy, &cli.wrapped).await,
         None => standalone(&cli.proxy).await.map(|()| ExitCode::SUCCESS),
     }
+}
+
+/// `kvguard status`: totals of a running proxy, as a summary or a single status line.
+async fn status(args: StatusArgs) -> Result<ExitCode> {
+    let url = args
+        .url
+        .or_else(wrapper::read_attach_url)
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", proxy::DEFAULT_PORT));
+    match tui::DataSource::remote(&url).fetch().await {
+        Ok(snapshot) if args.line => println!("{}", render_status_line(&snapshot)),
+        Ok(snapshot) => print!("{}", wrapper::render_summary(&snapshot)),
+        // A status line must never break the prompt it is embedded in.
+        Err(_) if args.line => println!("kvguard off"),
+        Err(err) => anyhow::bail!("no kvguard proxy at {url}: {err:#}"),
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Proxy + full-screen TUI (or line output with `--no-tui`) until the user quits.
@@ -53,6 +70,7 @@ async fn standalone(args: &ProxyArgs) -> Result<()> {
         config.heal_on_start,
         config.prefill_tok_per_sec,
     ));
+    monitor.set_partial_threshold(config.partial_threshold);
     let state = AppState::new(config, Arc::clone(&monitor))?;
     let listener = proxy::bind(args.port).await?;
     let url = format!("http://{}", listener.local_addr()?);

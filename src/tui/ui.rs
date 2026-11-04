@@ -173,15 +173,40 @@ pub fn cause(turn: &TurnRecord) -> (String, Color) {
         ),
         TurnStatus::Hit => ("✅ HIT".to_string(), Color::Green),
         TurnStatus::Miss => (
-            "⚠ MISS: prefix intact but provider cached 0 (TTL/eviction?)".to_string(),
+            with_notes(
+                "⚠ MISS: prefix intact but provider cached 0 (TTL/eviction?)".to_string(),
+                &turn.notes,
+            ),
             Color::Yellow,
         ),
+        TurnStatus::Partial => {
+            let (expected, cached) = turn.cache_expectation().unwrap_or_default();
+            let share = if expected > 0 {
+                cached as f64 * 100.0 / expected as f64
+            } else {
+                0.0
+            };
+            let text = format!(
+                "◐ PARTIAL: provider read {} of {} expected ({share:.0}%) — provider-side",
+                fmt_count(cached as usize),
+                fmt_count(expected as usize)
+            );
+            (with_notes(text, &turn.notes), Color::LightRed)
+        }
         TurnStatus::NewBranch => ("◆ NEW BRANCH".to_string(), Color::Blue),
         TurnStatus::Pending => ("…".to_string(), Color::DarkGray),
         TurnStatus::Error => (
             format!("✖ {}", turn.error.as_deref().unwrap_or("error")),
             Color::Magenta,
         ),
+    }
+}
+
+fn with_notes(text: String, notes: &[String]) -> String {
+    if notes.is_empty() {
+        text
+    } else {
+        format!("{text} · {}", notes.join(" · "))
     }
 }
 

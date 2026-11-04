@@ -45,7 +45,8 @@ kvguard is a local proxy with a terminal UI. It sits between your agent and the 
 |---|---|
 | 🧭 **Tracks the conversation** | Matches each request to the branch it continues, so sub-agents, title generators and parallel sessions never show up as false alarms. |
 | 🔬 **Diffs the prefix** | When it breaks, reports the exact **JSON path**, the **token index**, and a **root cause** — not "cache miss". |
-| 💸 **Measures the damage** | Reads real cache usage from the response stream (`cache_read_input_tokens`, `cached_tokens`, llama.cpp `cache_n`) without delaying a single byte. |
+| 💸 **Measures the damage** | Reads real cache usage from the response stream (`cache_read_input_tokens`, `cached_tokens`, llama.cpp `cache_n`) without delaying a single byte, and prices what was lost from those provider numbers. |
+| ⚖️ **Tells you whose fault it is** | A broken prefix is *your* client's fault. An intact prefix that the provider still served only partly from cache is *theirs* — kvguard reports the two separately. |
 | 🩹 **Heals it (opt-in)** | Rewrites requests so the prefix stays byte-stable: sorts tools, canonicalizes schemas, strips volatile headers, pins timestamps, routes llama.cpp slots. |
 | 🚦 **Gates CI** | Replays recorded traffic and fails the build when a code change breaks the cache. |
 
@@ -60,7 +61,7 @@ npx kvguard attach
 ```
 
 ```
-┌ kvguard v0.1.1 · http://127.0.0.1:4141 ──────────────────────────────────────────────────────────────────┐
+┌ kvguard v0.2.0 · http://127.0.0.1:4141 ──────────────────────────────────────────────────────────────────┐
 │ 🔥 AUTO-HEAL: ON  │  CACHE HIT 97.4%  │  TOKENS SAVED 1.42M tok  │  $4.82 saved | $0.14 wasted  │  GPU … │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
  Turn  Branch / Slot    Model               Prefix Health  Hit %  Root Cause / Action
@@ -106,6 +107,7 @@ The npm and Python launchers download the release binary for your platform on fi
 | `history message mutated` | compaction, placeholders, truncated tool output | 🔎 reported with the exact JSON path |
 | `system prompt changed` · `tool set changed` | real edits | 🔎 reported |
 | **MISS** with an intact prefix | cache TTL expiry, eviction | 🔎 reported, not blamed on your client |
+| **PARTIAL** with an intact prefix | provider-side cache collapse; more than 20 content blocks since the last cache point (Anthropic's lookback window); >15 req/min on one OpenAI cache key | 🔎 reported with expected vs. actual cached tokens and the likely reason |
 | sub-agent evicting the main KV slot | llama-server with parallel slots | ✅ main pinned to `id_slot 0`, sub-agents rotate |
 
 ## How it works
@@ -149,6 +151,28 @@ kvguard check trace.jsonl --fail-on-bust --min-hit-rate 0.95
 | 3 | turn-3.json | main   | ❌ BUST @ tok ~#44 | 44 / 105               | history message mutated at `messages[1].content` |
 ```
 
+## Expected vs. actual: the cache audit
+
+For every continuing turn kvguard knows what *should* come from cache — the prefix the previous turn read or wrote, as reported by the provider itself (so tokenizer differences don't matter) — and compares it with what the provider actually served:
+
+| Verdict | Meaning |
+|---|---|
+| ✅ `HIT` | The provider served what the previous turn cached. |
+| ❌ `BUST` | Your request changed an earlier part of the prompt. Fix the client (or `--heal`). |
+| ◐ `PARTIAL` | Prefix intact, but the provider served less than `--partial-threshold` (default 80 %) of the expected cache — e.g. a Claude Code session where cache reads collapse from 640K to a fixed 25K tokens. Not your client's fault. |
+| ⚠ `MISS` | Prefix intact, nothing served from cache — usually TTL expiry. |
+
+Wasted dollars are computed from the provider's own numbers (`expected − served`) at the correct write price — 1.25× for Anthropic's 5-minute TTL, 2× when the request asks for the 1-hour TTL. Prompts below a model's minimum cacheable size never raise an alert.
+
+## Metrics & status line
+
+```bash
+curl -s http://127.0.0.1:4141/__kvguard/metrics   # Prometheus: turns, busts, partials, misses, tokens, USD, GPU seconds
+kvguard status --line                             # kvguard ⚡ 97% hit · $4.82 saved · 1 bust
+```
+
+`status --line` prints `kvguard off` (exit 0) when no proxy is running, so it is safe to embed in a shell prompt, tmux or Claude Code's `statusLine` command.
+
 ## Heal rules — and what they will never do
 
 `--heal` rewrites requests **only in ways that keep their meaning**, and only where it is safe:
@@ -169,7 +193,9 @@ Toggling heal mid-session rebuilds the prefix once — that is expected and show
 - **Prices** are built-in list prices; unknown model versions fall back to their family.
 - **Clients must honor base-URL variables.** Cursor sends requests through its own backend, so no local proxy can see them.
 - **Ollama doesn't report reused tokens**, so its hit rate is estimated from the request diff.
-- **Verified against real traffic:** with a local Ollama 0.35 (`qwen2.5:7b-instruct`), a conversation's second turn was classified `HIT` and Ollama reported 1,619 of 1,635 prompt tokens cached.
+- **Verified against real traffic:**
+  - **Claude Code → Anthropic API:** turn 1 wrote 95,836 tokens to cache; turn 2 (`--continue`) read exactly 95,836 — kvguard's expectation matched to the token and the turn was classified `HIT`.
+  - **Ollama 0.35** (`qwen2.5:7b-instruct`): the second turn was classified `HIT` and Ollama reported 1,619 of 1,635 prompt tokens cached.
 
 ## Security
 
@@ -186,6 +212,7 @@ The proxy listens on `127.0.0.1` only. Control endpoints (`/__kvguard/*`) reject
 | `--relocate-git-status` · `--normalize-think-tags` | Opt-in rewrites (see above) |
 | `--chat-template FILE` | `.jinja` or `tokenizer_config.json` for template-drift detection |
 | `--record FILE` | Append forwarded requests to JSONL (input for `check`) |
+| `--partial-threshold F` | Report `PARTIAL` below this share of the expected cache read (default 0.8) |
 | `--no-tui` | One line per request instead of the full-screen TUI |
 | `--port N` · `--prefill-tps N` | Listen port (default 4141) · reference prefill speed (default 850) |
 
@@ -201,7 +228,9 @@ The proxy listens on `127.0.0.1` only. Control endpoints (`/__kvguard/*`) reject
 
 ## Roadmap
 
-Next up: **provider-truth cost accounting**, **partial-cache-read ("collapse") detection** for prefixes that are intact but only partly cached, **model-aware cache rules** (minimum sizes, Anthropic's 20-block lookback), **TTL-aware pricing**, exact local tokenization via llama-server, and a Prometheus endpoint. See [the analysis and roadmap](docs/kvguard-problem-analysis-and-roadmap.md).
+Shipped in 0.2: provider-truth cost accounting, `PARTIAL` detection, model-aware minimum sizes, Anthropic lookback and OpenAI per-key rate findings, TTL-aware pricing, Prometheus metrics, `status --line`, trusted publishing.
+
+Next: exact local tokenization via llama-server `/tokenize`, healing long tool loops past the lookback window, llama-server slot save/restore. See [the analysis and roadmap](docs/kvguard-problem-analysis-and-roadmap.md).
 
 ## Development
 
@@ -210,7 +239,7 @@ cargo test                                   # unit + end-to-end tests against a
 cargo clippy --all-targets -- -D warnings
 ```
 
-CI runs formatting, clippy, tests on Linux/macOS/Windows and an MSRV (1.88) check on every pull request. Tagging `v*` builds and publishes binaries for five targets.
+CI runs formatting, clippy, tests on Linux/macOS/Windows and an MSRV (1.88) check on every pull request. Tagging `v*` builds and publishes binaries for five targets; with a trusted publisher configured on npm / PyPI and the repository variables `PUBLISH_NPM` / `PUBLISH_PYPI` set to `true`, the same tag also publishes the launchers — no tokens involved.
 
 ## License
 

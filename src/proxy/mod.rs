@@ -8,7 +8,7 @@ pub mod local_llm;
 pub mod openai;
 pub mod passthrough;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +28,7 @@ use tokio::net::TcpListener;
 use crate::canonicalizer::{Healer, apply_routing_rules};
 use crate::config::{BackendHint, Config};
 use crate::diff::{analyze, jinja_verifier::JinjaVerifier};
-use crate::lineage::{MatchOutcome, SessionTree, Snapshot};
+use crate::lineage::{MatchKind, MatchOutcome, SessionTree, Snapshot};
 use crate::monitor::{Monitor, TurnRecord};
 use crate::provider::{ApiKind, Backend, is_local_url};
 use passthrough::{UsageCollector, UsageTap};
@@ -93,6 +93,53 @@ pub struct AppState {
     jinja: Option<Arc<JinjaVerifier>>,
     recorder: Option<Mutex<File>>,
     record_failed: AtomicBool,
+    /// Branch id → id of its latest turn (links each turn to its parent's provider usage).
+    last_turn: Mutex<HashMap<u64, u64>>,
+    /// OpenAI cache key → request instants within the last minute.
+    openai_rate: Mutex<HashMap<u64, VecDeque<Instant>>>,
+}
+
+/// Anthropic looks back at most this many content blocks from a breakpoint for a cache hit.
+const ANTHROPIC_LOOKBACK_BLOCKS: usize = 20;
+/// OpenAI recommends staying below ~15 requests/minute per prefix + `prompt_cache_key`.
+const OPENAI_KEY_RPM_LIMIT: usize = 15;
+const RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// True when any `cache_control` block asks for Anthropic's 1-hour TTL.
+fn requests_one_hour_ttl(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.get("cache_control")
+                .and_then(|c| c.get("ttl"))
+                .and_then(Value::as_str)
+                == Some("1h")
+                || map.values().any(requests_one_hour_ttl)
+        }
+        Value::Array(items) => items.iter().any(requests_one_hour_ttl),
+        _ => false,
+    }
+}
+
+/// Content blocks added since the parent turn (each string message counts as one block).
+fn new_content_blocks(parent: &Snapshot, body: &Value) -> usize {
+    let parent_messages = parent
+        .blocks
+        .iter()
+        .filter(|b| b.kind == crate::lineage::BlockKind::Message)
+        .count();
+    body.get("messages")
+        .and_then(Value::as_array)
+        .map(|messages| {
+            messages
+                .iter()
+                .skip(parent_messages)
+                .map(|m| match m.get("content") {
+                    Some(Value::Array(parts)) => parts.len(),
+                    _ => 1,
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 /// Request body to forward, plus the turn id when the request is an analyzed LLM call.
@@ -143,7 +190,72 @@ impl AppState {
             jinja,
             recorder,
             record_failed: AtomicBool::new(false),
+            last_turn: Mutex::new(HashMap::new()),
+            openai_rate: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Findings that explain provider-side misses: lookback window and per-key rate.
+    fn request_notes(
+        &self,
+        api: ApiKind,
+        backend: Backend,
+        body: &Value,
+        outcome: &MatchOutcome,
+    ) -> Vec<String> {
+        let mut notes = Vec::new();
+        if api == ApiKind::AnthropicMessages
+            && let Some(parent) = &outcome.parent
+        {
+            let added = new_content_blocks(parent, body);
+            if added > ANTHROPIC_LOOKBACK_BLOCKS {
+                notes.push(format!(
+                    "{added} content blocks since the previous turn — beyond Anthropic's \
+                     {ANTHROPIC_LOOKBACK_BLOCKS}-block cache lookback"
+                ));
+            }
+        }
+        if backend == Backend::OpenAiCloud {
+            let rate = self.openai_requests_last_minute(body);
+            if rate > OPENAI_KEY_RPM_LIMIT {
+                notes.push(format!(
+                    "{rate} requests/min on one cache key — OpenAI may overflow its cache \
+                     routing above ~{OPENAI_KEY_RPM_LIMIT}"
+                ));
+            }
+        }
+        notes
+    }
+
+    /// Requests in the last minute sharing this request's `prompt_cache_key` (or prefix).
+    fn openai_requests_last_minute(&self, body: &Value) -> usize {
+        let key_source = match body.get("prompt_cache_key").and_then(Value::as_str) {
+            Some(key) => key.to_string(),
+            None => {
+                let model = body.get("model").map(Value::to_string).unwrap_or_default();
+                let head = body
+                    .get("instructions")
+                    .or_else(|| body.pointer("/messages/0"))
+                    .or_else(|| body.pointer("/input/0"))
+                    .map(Value::to_string)
+                    .unwrap_or_default();
+                format!("{model}\u{0}{head}")
+            }
+        };
+        let key = xxhash_rust::xxh64::xxh64(key_source.as_bytes(), 0);
+        let now = Instant::now();
+        let Ok(mut rates) = self.openai_rate.lock() else {
+            return 0;
+        };
+        let window = rates.entry(key).or_default();
+        while window
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > RATE_WINDOW)
+        {
+            window.pop_front();
+        }
+        window.push_back(now);
+        window.len()
     }
 
     /// Classify the upstream once per base URL (and size the llama-server slot pool).
@@ -241,7 +353,19 @@ impl AppState {
         record.slot = outcome.slot.filter(|_| heal);
         record.local = backend.is_local();
         record.heal_actions = actions;
+        record.cache_ttl_1h = requests_one_hour_ttl(&value);
+        record.notes = self.request_notes(api, backend, &value, &outcome);
+        if outcome.kind != MatchKind::NewBranch {
+            record.parent_turn = self
+                .last_turn
+                .lock()
+                .ok()
+                .and_then(|last| last.get(&outcome.branch_id).copied());
+        }
         let id = self.monitor.add_turn(record);
+        if let Ok(mut last) = self.last_turn.lock() {
+            last.insert(outcome.branch_id, id);
+        }
         self.spawn_analysis(id, outcome, snapshot);
         Prepared {
             body,
@@ -289,6 +413,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route(&format!("{CONTROL_PREFIX}/state"), get(get_state))
         .route(&format!("{CONTROL_PREFIX}/heal"), post(set_heal))
+        .route(&format!("{CONTROL_PREFIX}/metrics"), get(get_metrics))
         .fallback(proxy)
         .with_state(state)
 }
@@ -322,6 +447,15 @@ async fn get_state(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Re
         return forbidden();
     }
     axum::Json(state.monitor.snapshot()).into_response()
+}
+
+/// Prometheus scrape endpoint.
+async fn get_metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !is_trusted_control_request(&headers) {
+        return forbidden();
+    }
+    let body = crate::monitor::render_metrics(&state.monitor.snapshot());
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
 /// `POST /__kvguard/heal` with `{"enabled": bool}`, or an empty body to toggle.

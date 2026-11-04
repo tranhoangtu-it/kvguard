@@ -379,6 +379,80 @@ async fn test_detect_qwen_jinja_think_tag_drift() {
     assert!(diagnosis.divergence_token > 0 && diagnosis.divergence_token < diagnosis.parent_tokens);
 }
 
+fn anthropic_sse(read: u64, written: u64) -> String {
+    format!(
+        "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":\
+         {{\"input_tokens\":20,\"cache_creation_input_tokens\":{written},\
+         \"cache_read_input_tokens\":{read}}}}}}}\n\n"
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_partial_cache_read_on_intact_prefix_is_flagged() {
+    let harness = Harness::start(false, |_| {}).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(anthropic_sse(0, 9_000), "text/event-stream"),
+        )
+        .up_to_n_times(1)
+        .mount(&harness.upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(anthropic_sse(500, 9_200), "text/event-stream"),
+        )
+        .mount(&harness.upstream)
+        .await;
+
+    let history = vec![json!({"role": "user", "content": filler(4_000)})];
+    let turn1 = json!({"model": "claude-sonnet-4-5", "system": "S", "messages": history});
+    let tool_uses: Vec<Value> = (0..11)
+        .map(|i| json!({"type": "tool_use", "id": format!("t{i}"), "name": "read", "input": {}}))
+        .collect();
+    let tool_results: Vec<Value> = (0..11)
+        .map(|i| json!({"type": "tool_result", "tool_use_id": format!("t{i}"), "content": "ok"}))
+        .collect();
+    let mut messages = history.clone();
+    messages.push(json!({"role": "assistant", "content": tool_uses}));
+    messages.push(json!({"role": "user", "content": tool_results}));
+    let turn2 = json!({"model": "claude-sonnet-4-5", "system": "S", "messages": messages});
+
+    harness.post("/v1/messages", &turn1).await;
+    harness.post("/v1/messages", &turn2).await;
+    let turns = harness.analyzed_turns(2).await;
+    // Usage arrives with the streamed body; give the tap a moment to finalize.
+    let deadline = tokio::time::Instant::now() + ANALYSIS_TIMEOUT;
+    let turn = loop {
+        let turns = harness.monitor.snapshot().turns;
+        if turns[1].status == TurnStatus::Partial || tokio::time::Instant::now() > deadline {
+            break turns[1].clone();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(
+        turns[1].match_kind,
+        MatchKind::Continuation,
+        "prefix intact"
+    );
+    assert_eq!(turn.status, TurnStatus::Partial, "{turn:#?}");
+    assert_eq!(turn.expected_cached_tokens, Some(9_000));
+    assert!(
+        turn.notes.iter().any(|n| n.contains("22 content blocks")),
+        "{:?}",
+        turn.notes
+    );
+
+    let metrics = reqwest::get(format!("{}/__kvguard/metrics", harness.url))
+        .await
+        .expect("metrics reachable")
+        .text()
+        .await
+        .expect("metrics body");
+    assert!(metrics.contains("kvguard_partials_total 1"), "{metrics}");
+}
+
 #[test]
 fn test_ci_gate_exit_code() {
     let dir = fixture("history-mutation");

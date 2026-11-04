@@ -79,7 +79,26 @@ Web dashboard, cơ sở dữ liệu ngoài, semantic/embedding cache, response c
 2. **v0.3 = P1-1, P1-2, P1-3, P1-6**.
 3. P1-4, P1-5 và P2 theo phản hồi người dùng.
 
-## 6. Câu hỏi còn mở
+## 6. Trạng thái (v0.2.0)
+
+| Mục | Trạng thái |
+|---|---|
+| P0-1 Chi phí theo số thật của provider | ✅ `expected − served` từ usage của provider |
+| P0-2 Phát hiện PARTIAL | ✅ trạng thái `PARTIAL`, ngưỡng `--partial-threshold` (mặc định 0.8) |
+| P0-3 Luật cache theo model + lookback 20 block | ✅ ngưỡng tối thiểu thận trọng theo model; ghi chú khi > 20 content block |
+| P0-4 Giá theo TTL | ✅ 1.25× (5m) / 2.0× (1h) |
+| P0-5 Kiểm chứng thật với Claude Code | ✅ lượt 2 đọc đúng 95,836 token như kỳ vọng → `HIT` |
+| P1-3 Prometheus `/__kvguard/metrics` | ✅ |
+| P1-4 Cảnh báo OpenAI > 15 req/phút/key | ✅ (ghi chú trên lượt) |
+| P1-5 `kvguard status --line` | ✅ |
+| P1-6 Trusted Publishing npm/PyPI | ✅ workflow sẵn sàng, bật bằng biến `PUBLISH_NPM` / `PUBLISH_PYPI` |
+| P1-1 Token chính xác qua llama-server | ⏳ còn lại — cần đưa phân tích nền sang async |
+| P1-2 Heal lookback | ⏳ còn lại — client thường đã dùng đủ 4 breakpoint |
+| P2 | ⏳ còn lại |
+
+**Quyết định cho các câu hỏi mở:** ngưỡng PARTIAL cấu hình được (mặc định 0.8); bảng ngưỡng tối thiểu dùng giá trị thận trọng (Opus 4096, Haiku/Sonnet 4.6+ 2048, còn lại 1024) — chỉ có thể *giảm* cảnh báo, không tạo cảnh báo sai; không gọi `count_tokens`.
+
+## 7. Câu hỏi còn mở
 
 - Ngưỡng PARTIAL (đề xuất 0.8) nên cố định hay cho cấu hình?
 - Bảng ngưỡng tối thiểu theo model cần xác minh với tài liệu chính thức của Anthropic trước khi đưa vào code.
