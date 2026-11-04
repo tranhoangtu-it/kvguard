@@ -18,35 +18,54 @@ use crate::tui::format::{fmt_duration, fmt_tokens};
 /// Busts listed individually in the exit summary.
 const SUMMARY_BUST_LINES: usize = 10;
 
-/// Discovery record for `kvguard attach`.
-#[derive(Debug, Serialize, Deserialize)]
+/// Discovery record for `kvguard attach` / `kvguard status`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachInfo {
     pub url: String,
     pub pid: u32,
+    /// Control-endpoint token of that proxy.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
-/// `%TEMP%/kvguard/attach.json` (or `$TMPDIR/kvguard/attach.json`).
+/// Per-user runtime directory: `$XDG_RUNTIME_DIR/kvguard`, else `<tmp>/kvguard-<user>` on
+/// Unix (shared `/tmp` must not let other users plant the file); `%TEMP%\kvguard` on Windows,
+/// which is already per-user.
+fn runtime_dir() -> PathBuf {
+    if cfg!(windows) {
+        return std::env::temp_dir().join("kvguard");
+    }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir).join("kvguard");
+    }
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    std::env::temp_dir().join(format!("kvguard-{user}"))
+}
+
 pub fn attach_file_path() -> PathBuf {
-    std::env::temp_dir().join("kvguard").join("attach.json")
+    runtime_dir().join("attach.json")
 }
 
-/// Read the most recent wrapper's URL, if any.
-pub fn read_attach_url() -> Option<String> {
+/// The most recent wrapper's URL and token, if any.
+pub fn read_attach() -> Option<AttachInfo> {
     let raw = std::fs::read_to_string(attach_file_path()).ok()?;
-    serde_json::from_str::<AttachInfo>(&raw).ok().map(|i| i.url)
+    serde_json::from_str(&raw).ok()
 }
 
-fn write_attach_file(url: &str) -> Result<()> {
+fn write_attach_file(url: &str, token: &str) -> Result<()> {
     let path = attach_file_path();
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
+        crate::secure_file::create_private_dir(dir)
             .with_context(|| format!("failed to create {}", dir.display()))?;
     }
     let info = AttachInfo {
         url: url.to_string(),
         pid: std::process::id(),
+        token: Some(token.to_string()),
     };
-    std::fs::write(&path, serde_json::to_vec(&info)?)
+    let mut file = crate::secure_file::create_private(&path)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec(&info)?)
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
@@ -74,10 +93,11 @@ pub async fn run(args: &ProxyArgs, command: &[String]) -> Result<ExitCode> {
     ));
     monitor.set_partial_threshold(config.partial_threshold);
     let state = AppState::new(config, Arc::clone(&monitor))?;
+    let token = state.control_token().to_string();
     let listener = proxy::bind(args.port).await?;
     let url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(proxy::serve(listener, state));
-    write_attach_file(&url)?;
+    write_attach_file(&url, &token)?;
 
     eprintln!(
         "kvguard: proxy {url} (auto-heal {}) — run `kvguard attach` in another terminal for the live TUI",

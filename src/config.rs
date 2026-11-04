@@ -13,6 +13,9 @@ const OLLAMA_DEFAULT: &str = "http://127.0.0.1:11434";
 /// Optional heal rules that change request content beyond pure canonicalization.
 #[derive(Debug, Clone, Default)]
 pub struct HealOptions {
+    /// Replace ISO-8601 times in the system prompt with the first value seen this session.
+    /// Changes what the model sees (it keeps reading the session start time), so opt-in.
+    pub pin_timestamps: bool,
     /// Move a volatile `gitStatus:` section out of the system prompt to the newest user turn.
     pub relocate_git_status: bool,
     /// Strip `<think>…</think>` / `reasoning_content` from historical assistant turns.
@@ -110,6 +113,8 @@ pub struct Config {
     pub record: Option<PathBuf>,
     /// Share of the expected cache read below which an intact-prefix turn is PARTIAL.
     pub partial_threshold: f64,
+    /// Token required by `/__kvguard/*`; a random one is generated when unset.
+    pub control_token: Option<String>,
 }
 
 impl Config {
@@ -124,6 +129,7 @@ impl Config {
             prefill_tok_per_sec: DEFAULT_PREFILL_TOK_PER_SEC,
             record: None,
             partial_threshold: crate::monitor::DEFAULT_PARTIAL_THRESHOLD,
+            control_token: None,
         }
     }
 }

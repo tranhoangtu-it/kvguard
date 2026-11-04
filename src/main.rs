@@ -30,15 +30,21 @@ async fn main() -> ExitCode {
 }
 
 async fn dispatch(cli: Cli) -> Result<ExitCode> {
+    if let Some(prices) = &cli.proxy.prices {
+        kvguard::pricing::load_overrides(prices)?;
+    }
     match cli.command {
         Some(Command::Check(args)) => {
             let opts = args.to_options();
+            if let Some(prices) = &args.prices {
+                kvguard::pricing::load_overrides(prices)?;
+            }
             let report = ci::run_check(&opts)?;
-            print!("{}", ci::render_markdown(&report));
+            print!("{}", ci::render_markdown(&report, &opts));
             Ok(ExitCode::from(report.exit_code(&opts)))
         }
         Some(Command::Attach(args)) => {
-            tui::attach(args.url).await?;
+            tui::attach(args.url, args.token).await?;
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Status(args)) => status(args).await,
@@ -49,11 +55,8 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
 
 /// `kvguard status`: totals of a running proxy, as a summary or a single status line.
 async fn status(args: StatusArgs) -> Result<ExitCode> {
-    let url = args
-        .url
-        .or_else(wrapper::read_attach_url)
-        .unwrap_or_else(|| format!("http://127.0.0.1:{}", proxy::DEFAULT_PORT));
-    match tui::DataSource::remote(&url).fetch().await {
+    let (url, token) = tui::resolve_target(args.url, args.token);
+    match tui::DataSource::remote(&url, token).fetch().await {
         Ok(snapshot) if args.line => println!("{}", render_status_line(&snapshot)),
         Ok(snapshot) => print!("{}", wrapper::render_summary(&snapshot)),
         // A status line must never break the prompt it is embedded in.
@@ -72,11 +75,13 @@ async fn standalone(args: &ProxyArgs) -> Result<()> {
     ));
     monitor.set_partial_threshold(config.partial_threshold);
     let state = AppState::new(config, Arc::clone(&monitor))?;
+    let token = state.control_token().to_string();
     let listener = proxy::bind(args.port).await?;
     let url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(proxy::serve(listener, state));
 
     let result = if args.no_tui {
+        eprintln!("kvguard: control token (x-kvguard-token / Bearer): {token}");
         headless(&monitor, &url).await
     } else {
         tui::run(tui::DataSource::Local(Arc::clone(&monitor))).await

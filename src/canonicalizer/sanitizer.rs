@@ -54,8 +54,11 @@ fn git_status_range(text: &str) -> Option<std::ops::Range<usize>> {
     Some(start..end)
 }
 
-static THINK_BLOCK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<think>.*?</think>\s*").expect("valid regex"));
+/// Closed reasoning blocks in the common tag styles (`<think>`, `<thinking>`, `[THINK]`).
+static THINK_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)<think>.*?</think>\s*|<thinking>.*?</thinking>\s*|\[THINK\].*?\[/THINK\]\s*")
+        .expect("valid regex")
+});
 
 /// Placeholder left in the system prompt when the git status section is relocated.
 pub const GIT_STATUS_PLACEHOLDER: &str = "[GIT_STATUS_MOVED_TO_TAIL]";
@@ -221,8 +224,15 @@ pub fn append_to_message(message: &mut Value, extra: &str, api: ApiKind) {
 /// Remove `<think>` blocks and reasoning fields from historical assistant turns.
 pub fn normalize_think_tags(api: ApiKind, body: &mut Value) -> Option<String> {
     let messages = body.get_mut(conversation_key(api))?.as_array_mut()?;
+    // Like Qwen3's own template: reasoning inside the current tool loop (after the latest
+    // user message) is kept, so the model keeps its in-progress thinking.
+    let last_user = messages.iter().rposition(|m| is_role(m, &["user"]))?;
     let mut changed = 0usize;
-    for message in messages.iter_mut().filter(|m| is_role(m, &["assistant"])) {
+    for message in messages
+        .iter_mut()
+        .take(last_user)
+        .filter(|m| is_role(m, &["assistant"]))
+    {
         let before = message.clone();
         if let Some(map) = message.as_object_mut() {
             map.remove("reasoning_content");
@@ -283,15 +293,23 @@ mod tests {
     }
 
     #[test]
-    fn removes_think_blocks_from_assistant_history() {
+    fn removes_think_blocks_only_before_the_latest_user_turn() {
         let mut body = json!({"messages": [
             {"role": "user", "content": "q"},
-            {"role": "assistant", "content": "<think>hmm</think>\nanswer", "reasoning_content": "hmm"}
+            {"role": "assistant", "content": "<think>hmm</think>\nanswer", "reasoning_content": "hmm"},
+            {"role": "assistant", "content": "[THINK]x[/THINK]second"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": "<think>in the current tool loop</think>call"}
         ]});
         assert!(normalize_think_tags(ApiKind::OpenAiChat, &mut body).is_some());
         assert_eq!(
             body["messages"][1],
             json!({"role": "assistant", "content": "answer"})
+        );
+        assert_eq!(body["messages"][2]["content"], "second");
+        assert_eq!(
+            body["messages"][4]["content"], "<think>in the current tool loop</think>call",
+            "reasoning after the latest user turn is kept"
         );
     }
 }

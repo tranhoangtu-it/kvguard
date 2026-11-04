@@ -33,6 +33,7 @@ pub struct CheckRow {
     pub index: usize,
     pub source: String,
     pub branch: String,
+    pub model: String,
     pub kind: MatchKind,
     pub heal_actions: Vec<String>,
     pub est_prompt_tokens: u64,
@@ -45,6 +46,17 @@ pub struct CheckRow {
 impl CheckRow {
     pub fn is_bust(&self) -> bool {
         self.diagnosis.is_some() || self.kind == MatchKind::Mutation
+    }
+
+    /// Estimated list-price cost of the invalidated prefix (5-minute cache write rate).
+    pub fn est_waste_usd(&self) -> Option<f64> {
+        let d = self.diagnosis.as_ref()?;
+        let price = crate::pricing::price_for(&self.model)?;
+        Some(crate::pricing::wasted_usd(
+            price,
+            d.invalidated_tokens as u64,
+            false,
+        ))
     }
 }
 
@@ -129,6 +141,7 @@ pub fn run_check(opts: &CheckOptions) -> Result<CheckReport> {
             index: index + 1,
             source: input.source,
             branch: outcome.branch_label,
+            model: snapshot.model.clone(),
             kind: outcome.kind,
             heal_actions,
             est_prompt_tokens: analysis.est_prompt_tokens,
@@ -217,7 +230,7 @@ fn expand_paths(patterns: &[String]) -> Result<Vec<PathBuf>> {
 }
 
 /// Markdown report for stdout / GitHub job summaries.
-pub fn render_markdown(report: &CheckReport) -> String {
+pub fn render_markdown(report: &CheckReport, opts: &CheckOptions) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -247,7 +260,7 @@ pub fn render_markdown(report: &CheckReport) -> String {
         let _ = write!(
             out,
             "\n### #{} `{}` — {} at `{}`\n\n\
-             Divergence at token ~#{} of ~{} (o200k estimate); ~{} tokens invalidated.\n\n\
+             Divergence at token ~#{} of ~{} (o200k estimate); ~{} tokens invalidated{}.\n\n\
              ```diff\n- {}\n+ {}\n```\n",
             row.index,
             row.source,
@@ -256,11 +269,42 @@ pub fn render_markdown(report: &CheckReport) -> String {
             d.divergence_token,
             d.parent_tokens,
             d.invalidated_tokens,
+            row.est_waste_usd()
+                .map(|usd| format!(" (≈ ${usd:.4} at list price per occurrence)"))
+                .unwrap_or_default(),
             single_line(&d.parent_excerpt),
             single_line(&d.current_excerpt),
         );
     }
+    if report.busts() > 0 {
+        out.push_str("\n`⟦` marks the first byte that differs; `⏎` is a newline.\n");
+    }
+    out.push_str(&result_line(report, opts));
     out
+}
+
+/// Final PASS/FAIL line, so a non-zero exit code is never a surprise.
+fn result_line(report: &CheckReport, opts: &CheckOptions) -> String {
+    let mut reasons = Vec::new();
+    if opts.fail_on_bust && report.busts() > 0 {
+        reasons.push(format!("{} bust(s) with --fail-on-bust", report.busts()));
+    }
+    if let Some(min) = opts.min_hit_rate.filter(|min| report.reuse_rate() < *min) {
+        reasons.push(format!(
+            "prefix reuse {:.1}% below --min-hit-rate {:.1}%",
+            report.reuse_rate() * 100.0,
+            min * 100.0
+        ));
+    }
+    if reasons.is_empty() {
+        "\n**Result: PASS** (exit 0)\n".to_string()
+    } else {
+        format!(
+            "\n**Result: FAIL** — {} (exit {})\n",
+            reasons.join("; "),
+            report.exit_code(opts)
+        )
+    }
 }
 
 fn verdict(row: &CheckRow) -> String {

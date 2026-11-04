@@ -452,7 +452,8 @@ impl Monitor {
 
 /// Write turns as JSONL (shared by the local and attached TUI).
 pub fn export_turns(turns: &[TurnRecord], path: &Path) -> Result<usize> {
-    let mut file = std::fs::File::create(path)
+    // Exports contain prompt excerpts: owner-only, like traces.
+    let mut file = crate::secure_file::create_private(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
     for turn in turns {
         serde_json::to_writer(&mut file, turn)?;
@@ -534,7 +535,41 @@ pub fn render_metrics(snapshot: &StateSnapshot) -> String {
          kvguard_heal_enabled {}\n",
         u8::from(snapshot.heal_enabled)
     ));
+    out.push_str(&recent_turns_by_label(&snapshot.turns));
     out
+}
+
+/// `kvguard_recent_turns{model,status}`: a gauge over the in-memory window (latest
+/// turns), so it can go down as old turns leave the window.
+fn recent_turns_by_label(turns: &[TurnRecord]) -> String {
+    let mut counts: std::collections::BTreeMap<(String, String), u64> = Default::default();
+    for turn in turns {
+        let status = serde_json::to_value(turn.status)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        *counts.entry((turn.model.clone(), status)).or_default() += 1;
+    }
+    let mut out = String::from(
+        "# HELP kvguard_recent_turns Turns in the in-memory window by model and verdict\n\
+         # TYPE kvguard_recent_turns gauge\n",
+    );
+    for ((model, status), count) in counts {
+        out.push_str(&format!(
+            "kvguard_recent_turns{{model=\"{}\",status=\"{}\"}} {count}\n",
+            escape_label(&model),
+            escape_label(&status)
+        ));
+    }
+    out
+}
+
+/// Prometheus label-value escaping (backslash, quote, newline).
+fn escape_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 /// One-line status for shell prompts and editor status lines.

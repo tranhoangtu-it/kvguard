@@ -9,7 +9,7 @@ pub mod openai;
 pub mod passthrough;
 
 use std::collections::{HashMap, VecDeque};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -58,12 +58,24 @@ fn is_loopback_host(headers: &HeaderMap) -> bool {
 }
 
 /// Control endpoints additionally refuse browser requests (any `Origin`), blocking CSRF.
-fn is_trusted_control_request(headers: &HeaderMap) -> bool {
-    is_loopback_host(headers) && !headers.contains_key(header::ORIGIN)
+/// Control endpoints also require the per-process token (`x-kvguard-token` or
+/// `Authorization: Bearer`), so other local users and processes can't read prompts or flip heal.
+fn is_trusted_control_request(headers: &HeaderMap, token: &str) -> bool {
+    let header_str = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let provided = header_str("x-kvguard-token").or_else(|| {
+        header_str(header::AUTHORIZATION.as_str()).and_then(|v| v.strip_prefix("Bearer "))
+    });
+    is_loopback_host(headers)
+        && !headers.contains_key(header::ORIGIN)
+        && provided.is_some_and(|p| crate::secure_file::tokens_match(token, p.trim()))
 }
 
 fn forbidden() -> Response {
-    (StatusCode::FORBIDDEN, "kvguard: loopback clients only").into_response()
+    (
+        StatusCode::FORBIDDEN,
+        "kvguard: loopback clients with the control token only (see `kvguard attach --help`)",
+    )
+        .into_response()
 }
 
 /// Classify a non-local upstream by host.
@@ -93,6 +105,7 @@ pub struct AppState {
     jinja: Option<Arc<JinjaVerifier>>,
     recorder: Option<Mutex<File>>,
     record_failed: AtomicBool,
+    control_token: String,
     /// Branch id → id of its latest turn (links each turn to its parent's provider usage).
     last_turn: Mutex<HashMap<u64, u64>>,
     /// OpenAI cache key → request instants within the last minute.
@@ -166,15 +179,16 @@ impl AppState {
             .record
             .as_deref()
             .map(|path| {
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
+                crate::secure_file::append_private(path)
                     .with_context(|| format!("failed to open record file {}", path.display()))
             })
             .transpose()?
             .map(Mutex::new);
         // A proxy must hand redirects back to the client, never follow them with its credentials.
+        let control_token = match config.control_token.clone() {
+            Some(token) if !token.trim().is_empty() => token.trim().to_string(),
+            _ => crate::secure_file::random_token()?,
+        };
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
@@ -190,9 +204,15 @@ impl AppState {
             jinja,
             recorder,
             record_failed: AtomicBool::new(false),
+            control_token,
             last_turn: Mutex::new(HashMap::new()),
             openai_rate: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Token required by `/__kvguard/*` (give it to `attach`, `status` or a metrics scraper).
+    pub fn control_token(&self) -> &str {
+        &self.control_token
     }
 
     /// Findings that explain provider-side misses: lookback window and per-key rate.
@@ -211,7 +231,8 @@ impl AppState {
         {
             notes.push(
                 "llama-server has a single slot: this branch evicts the main conversation's \
-                 KV cache — start it with -np 2 (or more)"
+                 KV cache — start it with -np 2 --kv-unified (keeps the full context per \
+                 slot); --cache-reuse 256 also helps after small edits"
                     .to_string(),
             );
         }
@@ -320,6 +341,9 @@ impl AppState {
                         },
                         false,
                     ),
+                    None if local_llm::probe_ollama(&self.client, base).await => {
+                        (Backend::Ollama, false)
+                    }
                     None => (Backend::LocalGeneric, true),
                 }
             }
@@ -497,7 +521,7 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> Result<()> {
 }
 
 async fn get_state(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !is_trusted_control_request(&headers) {
+    if !is_trusted_control_request(&headers, &state.control_token) {
         return forbidden();
     }
     axum::Json(state.monitor.snapshot()).into_response()
@@ -505,7 +529,7 @@ async fn get_state(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Re
 
 /// Prometheus scrape endpoint.
 async fn get_metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !is_trusted_control_request(&headers) {
+    if !is_trusted_control_request(&headers, &state.control_token) {
         return forbidden();
     }
     let body = crate::monitor::render_metrics(&state.monitor.snapshot());
@@ -514,7 +538,7 @@ async fn get_metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
 
 /// `POST /__kvguard/heal` with `{"enabled": bool}`, or an empty body to toggle.
 async fn set_heal(State(state): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {
-    if !is_trusted_control_request(&headers) {
+    if !is_trusted_control_request(&headers, &state.control_token) {
         return forbidden();
     }
     let requested = serde_json::from_slice::<Value>(&body)
@@ -644,12 +668,31 @@ mod tests {
     }
 
     #[test]
-    fn control_endpoints_reject_browser_origins() {
-        assert!(is_trusted_control_request(&headers("127.0.0.1:4141", None)));
-        assert!(!is_trusted_control_request(&headers(
-            "127.0.0.1:4141",
-            Some("https://evil.example")
-        )));
+    fn control_endpoints_require_token_and_reject_browser_origins() {
+        let with_token = |mut h: HeaderMap, value: &str| {
+            h.insert("x-kvguard-token", HeaderValue::from_str(value).unwrap());
+            h
+        };
+        let token = "0123456789abcdef";
+        let ok = with_token(headers("127.0.0.1:4141", None), token);
+        assert!(is_trusted_control_request(&ok, token));
+        assert!(!is_trusted_control_request(
+            &headers("127.0.0.1:4141", None),
+            token
+        ));
+        let wrong = with_token(headers("127.0.0.1:4141", None), "nope");
+        assert!(!is_trusted_control_request(&wrong, token));
+        let browser = with_token(
+            headers("127.0.0.1:4141", Some("https://evil.example")),
+            token,
+        );
+        assert!(!is_trusted_control_request(&browser, token));
+        let mut bearer = headers("localhost:4141", None);
+        bearer.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        assert!(is_trusted_control_request(&bearer, token));
     }
 
     #[test]

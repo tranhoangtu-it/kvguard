@@ -27,22 +27,38 @@ pub enum DataSource {
     Remote {
         client: reqwest::Client,
         url: String,
+        token: String,
     },
 }
 
+/// Proxy URL and control token for `attach` / `status`: explicit values first, then the
+/// most recent wrapper's attach file, then the default port.
+pub fn resolve_target(url: Option<String>, token: Option<String>) -> (String, String) {
+    let attach = crate::wrapper::read_attach();
+    let url = url
+        .or_else(|| attach.as_ref().map(|a| a.url.clone()))
+        .unwrap_or_else(|| format!("http://127.0.0.1:{DEFAULT_PORT}"));
+    let token = token
+        .or_else(|| attach.and_then(|a| a.token))
+        .unwrap_or_default();
+    (url, token)
+}
+
 impl DataSource {
-    pub fn remote(url: impl Into<String>) -> Self {
+    pub fn remote(url: impl Into<String>, token: impl Into<String>) -> Self {
         Self::Remote {
             client: reqwest::Client::new(),
             url: url.into().trim_end_matches('/').to_string(),
+            token: token.into(),
         }
     }
 
     pub async fn fetch(&self) -> Result<StateSnapshot> {
         match self {
             Self::Local(monitor) => Ok(monitor.snapshot()),
-            Self::Remote { client, url } => client
+            Self::Remote { client, url, token } => client
                 .get(format!("{url}{CONTROL_PREFIX}/state"))
+                .header("x-kvguard-token", token)
                 .timeout(Duration::from_secs(2))
                 .send()
                 .await?
@@ -56,9 +72,10 @@ impl DataSource {
     async fn toggle_heal(&self) -> Result<bool> {
         match self {
             Self::Local(monitor) => Ok(monitor.toggle_heal()),
-            Self::Remote { client, url } => {
+            Self::Remote { client, url, token } => {
                 let reply: serde_json::Value = client
                     .post(format!("{url}{CONTROL_PREFIX}/heal"))
+                    .header("x-kvguard-token", token)
                     .send()
                     .await?
                     .error_for_status()?
@@ -82,11 +99,9 @@ pub async fn run(source: DataSource) -> Result<()> {
 }
 
 /// `kvguard attach`: connect to a wrapper's proxy.
-pub async fn attach(url: Option<String>) -> Result<()> {
-    let url = url
-        .or_else(crate::wrapper::read_attach_url)
-        .unwrap_or_else(|| format!("http://127.0.0.1:{DEFAULT_PORT}"));
-    let source = DataSource::remote(&url);
+pub async fn attach(url: Option<String>, token: Option<String>) -> Result<()> {
+    let (url, token) = resolve_target(url, token);
+    let source = DataSource::remote(&url, token);
     source.fetch().await.with_context(|| {
         format!("no kvguard proxy at {url} — start one with `kvguard -- <command>`")
     })?;

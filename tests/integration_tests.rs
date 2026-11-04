@@ -23,6 +23,7 @@ struct Harness {
     monitor: Arc<Monitor>,
     upstream: MockServer,
     client: reqwest::Client,
+    token: String,
 }
 
 impl Harness {
@@ -32,6 +33,7 @@ impl Harness {
         configure(&mut config);
         let monitor = Arc::new(Monitor::new(heal, 850.0));
         let state = AppState::new(config, Arc::clone(&monitor)).expect("state");
+        let token = state.control_token().to_string();
         let listener = proxy::bind(Some(0)).await.expect("bind");
         let url = format!("http://{}", listener.local_addr().expect("addr"));
         tokio::spawn(proxy::serve(listener, state));
@@ -40,7 +42,21 @@ impl Harness {
             monitor,
             upstream,
             client: reqwest::Client::new(),
+            token,
         }
+    }
+
+    async fn control(&self, method: reqwest::Method, route: &str, token: Option<&str>) -> u16 {
+        let mut request = self.client.request(method, format!("{}{route}", self.url));
+        if let Some(token) = token {
+            request = request.header("x-kvguard-token", token);
+        }
+        request
+            .send()
+            .await
+            .expect("proxy reachable")
+            .status()
+            .as_u16()
     }
 
     async fn post(&self, route: &str, body: &Value) -> String {
@@ -444,7 +460,11 @@ async fn test_partial_cache_read_on_intact_prefix_is_flagged() {
         turn.notes
     );
 
-    let metrics = reqwest::get(format!("{}/__kvguard/metrics", harness.url))
+    let metrics = harness
+        .client
+        .get(format!("{}/__kvguard/metrics", harness.url))
+        .bearer_auth(&harness.token)
+        .send()
         .await
         .expect("metrics reachable")
         .text()
@@ -571,6 +591,45 @@ async fn test_llama_server_exact_tokens_reveal_template_drift() {
         "single-slot advice: {:?}",
         turns[2].notes
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_control_endpoints_require_the_token() {
+    let harness = Harness::start(false, |_| {}).await;
+    let get = reqwest::Method::GET;
+    let post = reqwest::Method::POST;
+    for route in ["/__kvguard/state", "/__kvguard/metrics"] {
+        assert_eq!(
+            harness.control(get.clone(), route, None).await,
+            403,
+            "{route}"
+        );
+        assert_eq!(
+            harness.control(get.clone(), route, Some("wrong")).await,
+            403,
+            "{route}"
+        );
+        let token = harness.token.clone();
+        assert_eq!(
+            harness.control(get.clone(), route, Some(&token)).await,
+            200,
+            "{route}"
+        );
+    }
+    assert_eq!(
+        harness.control(post.clone(), "/__kvguard/heal", None).await,
+        403
+    );
+    assert!(
+        !harness.monitor.heal_enabled(),
+        "heal not toggled without the token"
+    );
+    let token = harness.token.clone();
+    assert_eq!(
+        harness.control(post, "/__kvguard/heal", Some(&token)).await,
+        200
+    );
+    assert!(harness.monitor.heal_enabled());
 }
 
 #[test]

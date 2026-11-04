@@ -1,0 +1,71 @@
+name: kvguard check
+description: Fail the build when recorded LLM requests break the prompt-cache prefix.
+author: tranhoangtu-it
+branding:
+  icon: shield
+  color: orange
+
+inputs:
+  files:
+    description: Space-separated request files or globs (.json bodies or .jsonl traces).
+    required: true
+  fail-on-bust:
+    description: Fail when any request breaks its parent's prefix.
+    default: "true"
+  min-hit-rate:
+    description: Fail when the estimated prefix reuse rate is below this value (0.0–1.0).
+    default: ""
+  version:
+    description: kvguard release tag (e.g. v0.3.0) or "latest".
+    default: latest
+
+runs:
+  using: composite
+  steps:
+    - name: Install kvguard
+      shell: bash
+      env:
+        KVGUARD_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64) target=x86_64-unknown-linux-musl ;;
+          Linux-aarch64) target=aarch64-unknown-linux-musl ;;
+          Darwin-arm64) target=aarch64-apple-darwin ;;
+          Darwin-x86_64) target=x86_64-apple-darwin ;;
+          *) echo "::error::kvguard action supports Linux and macOS runners"; exit 1 ;;
+        esac
+        tag="$KVGUARD_VERSION"
+        if [ "$tag" = "latest" ]; then
+          tag=$(curl -fsSL https://api.github.com/repos/tranhoangtu-it/kvguard/releases/latest \
+            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+        fi
+        asset="kvguard-$tag-$target.tar.gz"
+        base="https://github.com/tranhoangtu-it/kvguard/releases/download/$tag"
+        dir="$RUNNER_TEMP/kvguard"
+        mkdir -p "$dir" && cd "$dir"
+        curl -fsSLO "$base/$asset"
+        curl -fsSLO "$base/$asset.sha256"
+        if command -v sha256sum >/dev/null; then
+          sha256sum -c "$asset.sha256"
+        else
+          shasum -a 256 -c "$asset.sha256"
+        fi
+        tar -xzf "$asset"
+        echo "$dir" >> "$GITHUB_PATH"
+
+    - name: Check cache prefixes
+      shell: bash
+      env:
+        FILES: ${{ inputs.files }}
+        FAIL_ON_BUST: ${{ inputs.fail-on-bust }}
+        MIN_HIT_RATE: ${{ inputs.min-hit-rate }}
+      run: |
+        set -uo pipefail
+        args=()
+        if [ "$FAIL_ON_BUST" = "true" ]; then args+=(--fail-on-bust); fi
+        if [ -n "$MIN_HIT_RATE" ]; then args+=(--min-hit-rate "$MIN_HIT_RATE"); fi
+        # FILES is intentionally unquoted so globs and multiple paths expand.
+        # shellcheck disable=SC2086
+        kvguard check $FILES "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+        exit "${PIPESTATUS[0]}"

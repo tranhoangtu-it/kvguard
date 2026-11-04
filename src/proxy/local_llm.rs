@@ -85,6 +85,13 @@ pub async fn render_and_tokenize(
     Some((prompt, tokens))
 }
 
+/// True when the upstream answers Ollama's `/api/version` (also reached through `/v1`).
+pub async fn probe_ollama(client: &reqwest::Client, base: &str) -> bool {
+    get_json(client, &format!("{base}/api/version"))
+        .await
+        .is_some_and(|v| v.get("version").is_some())
+}
+
 async fn post_json(client: &reqwest::Client, url: &str, body: &Value) -> Option<Value> {
     let response = client
         .post(url)

@@ -58,8 +58,12 @@ pub fn inject_slot(body: &mut Value, slot: u32) -> bool {
     let Some(map) = body.as_object_mut() else {
         return false;
     };
+    // A client that routes its own slots knows better; never override it.
+    if map.contains_key("id_slot") {
+        return false;
+    }
     map.insert("id_slot".into(), Value::from(slot));
-    map.insert("cache_prompt".into(), Value::Bool(true));
+    map.entry("cache_prompt").or_insert(Value::Bool(true));
     true
 }
 
@@ -70,6 +74,22 @@ mod tests {
     #[test]
     fn single_slot_server_is_not_routed() {
         assert!(SlotPool::new(1).is_none());
+    }
+
+    #[test]
+    fn client_chosen_slot_is_never_overridden() {
+        let mut body = serde_json::json!({"id_slot": 3, "cache_prompt": false});
+        assert!(!inject_slot(&mut body, 0));
+        assert_eq!(
+            body,
+            serde_json::json!({"id_slot": 3, "cache_prompt": false})
+        );
+        let mut fresh = serde_json::json!({});
+        assert!(inject_slot(&mut fresh, 1));
+        assert_eq!(
+            fresh,
+            serde_json::json!({"id_slot": 1, "cache_prompt": true})
+        );
     }
 
     #[test]
