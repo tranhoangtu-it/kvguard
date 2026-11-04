@@ -52,7 +52,8 @@ pub fn read_attach() -> Option<AttachInfo> {
     serde_json::from_str(&raw).ok()
 }
 
-fn write_attach_file(url: &str, token: &str) -> Result<()> {
+/// Publish this proxy's URL and control token for `kvguard attach` / `kvguard status`.
+pub fn write_attach_file(url: &str, token: &str) -> Result<()> {
     let path = attach_file_path();
     if let Some(dir) = path.parent() {
         crate::secure_file::create_private_dir(dir)
@@ -69,7 +70,8 @@ fn write_attach_file(url: &str, token: &str) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn remove_attach_file() {
+/// Remove the attach file if this process wrote it.
+pub fn remove_attach_file() {
     let path = attach_file_path();
     let is_ours = std::fs::read_to_string(&path)
         .ok()

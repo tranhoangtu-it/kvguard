@@ -1,6 +1,6 @@
 //! kvguard entrypoint: dispatches to wrapper, standalone TUI, attach or CI check mode.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,6 +79,8 @@ async fn standalone(args: &ProxyArgs) -> Result<()> {
     let listener = proxy::bind(args.port).await?;
     let url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(proxy::serve(listener, state));
+    // `kvguard status` / `attach` read the control token from here.
+    wrapper::write_attach_file(&url, &token)?;
 
     let result = if args.no_tui {
         eprintln!("kvguard: control token (x-kvguard-token / Bearer): {token}");
@@ -87,15 +89,17 @@ async fn standalone(args: &ProxyArgs) -> Result<()> {
         tui::run(tui::DataSource::Local(Arc::clone(&monitor))).await
     };
     server.abort();
+    wrapper::remove_attach_file();
     eprint!("{}", wrapper::render_summary(&monitor.snapshot()));
     result
 }
 
-/// Print one line per analyzed turn until Ctrl-C.
+/// Print a line per analyzed turn until Ctrl-C, and again whenever its status changes:
+/// provider usage arrives after the stream ends and can turn a HIT into PARTIAL or MISS.
 async fn headless(monitor: &Monitor, url: &str) -> Result<()> {
     eprintln!("kvguard: listening on {url}");
     eprintln!("  ANTHROPIC_BASE_URL={url}  OPENAI_BASE_URL={url}/v1  OLLAMA_HOST={url}");
-    let mut printed = HashSet::new();
+    let mut printed: HashMap<u64, TurnStatus> = HashMap::new();
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => return Ok(()),
@@ -103,7 +107,7 @@ async fn headless(monitor: &Monitor, url: &str) -> Result<()> {
         }
         for turn in monitor.snapshot().turns {
             let analyzed = turn.est_prompt_tokens.is_some() || turn.status == TurnStatus::Error;
-            if !analyzed || !printed.insert(turn.id) {
+            if !analyzed || printed.insert(turn.id, turn.status) == Some(turn.status) {
                 continue;
             }
             let hit = turn
