@@ -144,7 +144,7 @@ kvguard check trace.jsonl --fail-on-bust --min-hit-rate 0.95
 Or with the GitHub Action:
 
 ```yaml
-- uses: tranhoangtu-it/kvguard@v0.3.1
+- uses: tranhoangtu-it/kvguard@v0.3.2
   with:
     files: tests/traces/*.jsonl
     min-hit-rate: "0.95"

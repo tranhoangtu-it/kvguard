@@ -45,7 +45,11 @@ test of the composite `action.yml`. Merge only after CI passes on the PR head SH
 1. Bump the version in `Cargo.toml` (then `cargo update -p kvguard`), `wrappers/npm/package.json`,
    `wrappers/pypi/pyproject.toml` and `wrappers/pypi/kvguard/__init__.py`. Also bump the Action tag
    in the README and add a CHANGELOG entry.
-2. Merge, then push a tag `vX.Y.Z`. `release.yml` builds 5 targets with provenance attestations
+2. Merge, then tag the bump commit by SHA (`git fetch origin; git tag -a vX.Y.Z <sha> -m ...`);
+   tagging after a stale `git pull` once put a tag on the pre-bump commit. Before tagging, a
+   build-only trial is `gh workflow run release.yml --ref <branch>` (publish steps skip without a
+   tag). `release.yml` builds 5 targets (both macOS targets in one job, because separate macOS
+   arm64 jobs were repeatedly cancelled for runner capacity) with provenance attestations
    and creates the GitHub Release. If the repo variables `PUBLISH_NPM`, `PUBLISH_PYPI` and
    `PUBLISH_HOMEBREW` are set, it also publishes to npm and PyPI (OIDC trusted publishing) and to
    the `tranhoangtu-it/homebrew-tap` formula (secret `HOMEBREW_TAP_TOKEN`).

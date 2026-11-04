@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kvguard"
-version = "0.3.1"
+version = "0.3.2"
 description = "Local proxy & TUI that catches 1-token prompt/KV cache prefix misses and auto-heals requests for Anthropic, OpenAI, llama.cpp and Ollama."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
