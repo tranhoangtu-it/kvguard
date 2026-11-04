@@ -41,6 +41,18 @@ pub enum Command {
     Check(CheckArgs),
     /// Open the live TUI for a kvguard proxy started in wrapper mode.
     Attach(AttachArgs),
+    /// Print a running proxy's totals (`--line` for shell prompts and editor status lines).
+    Status(StatusArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct StatusArgs {
+    /// Proxy URL (default: the most recent wrapper, else http://127.0.0.1:4141).
+    #[arg(long)]
+    pub url: Option<String>,
+    /// One compact line; prints `kvguard off` (exit 0) when no proxy is running.
+    #[arg(long)]
+    pub line: bool,
 }
 
 /// Heal-rule flags shared by the proxy and `check`.
@@ -89,6 +101,10 @@ pub struct ProxyArgs {
     /// Append every forwarded request body to this JSONL file (input for `kvguard check`).
     #[arg(long)]
     pub record: Option<PathBuf>,
+    /// Report PARTIAL when the provider serves less than this share of what the previous
+    /// turn cached (0.0–1.0).
+    #[arg(long, default_value_t = crate::monitor::DEFAULT_PARTIAL_THRESHOLD)]
+    pub partial_threshold: f64,
     /// Standalone mode: print one line per turn instead of the full-screen TUI.
     #[arg(long)]
     pub no_tui: bool,
@@ -107,6 +123,7 @@ impl ProxyArgs {
         config.chat_template = self.chat_template.clone();
         config.prefill_tok_per_sec = self.prefill_tps;
         config.record = self.record.clone();
+        config.partial_threshold = self.partial_threshold;
         config
     }
 }

@@ -63,9 +63,37 @@ pub fn price_for(model: &str) -> Option<Price> {
         .map(|(_, price)| *price)
 }
 
+/// Anthropic bills 1-hour cache writes at 2× input instead of 1.25× for the 5-minute TTL.
+const ONE_HOUR_WRITE_MULTIPLIER: f64 = 2.0;
+
+/// Price of writing one million tokens to the cache.
+pub fn write_rate(price: Price, one_hour_ttl: bool) -> f64 {
+    if one_hour_ttl {
+        price.input * ONE_HOUR_WRITE_MULTIPLIER
+    } else {
+        price.cache_write
+    }
+}
+
 /// Money lost because `invalidated_tokens` had to be (re)written instead of read from cache.
-pub fn wasted_usd(price: Price, invalidated_tokens: u64) -> f64 {
-    per_million(invalidated_tokens) * (price.cache_write - price.cache_read)
+pub fn wasted_usd(price: Price, invalidated_tokens: u64, one_hour_ttl: bool) -> f64 {
+    per_million(invalidated_tokens) * (write_rate(price, one_hour_ttl) - price.cache_read)
+}
+
+/// Smallest prompt (in tokens) a provider will cache, used to avoid false MISS/PARTIAL alerts.
+///
+/// Values are deliberately conservative: a higher threshold only suppresses alerts on
+/// short prompts, it never invents one.
+pub fn min_cacheable_tokens(model: &str) -> u64 {
+    let model = model.to_ascii_lowercase();
+    if model.contains("opus") {
+        4_096
+    } else if model.contains("haiku") || model.contains("sonnet-4-6") || model.contains("sonnet-5")
+    {
+        2_048
+    } else {
+        1_024
+    }
 }
 
 /// Money saved because `cached_tokens` were read from cache instead of billed at full price.
@@ -101,7 +129,17 @@ mod tests {
     #[test]
     fn wasted_uses_write_minus_read() {
         let p = price_for("claude-sonnet-4-5").unwrap();
-        let wasted = wasted_usd(p, 1_000_000);
+        let wasted = wasted_usd(p, 1_000_000, false);
         assert!((wasted - (3.75 - 0.3)).abs() < 1e-9);
+        let wasted_1h = wasted_usd(p, 1_000_000, true);
+        assert!((wasted_1h - (6.0 - 0.3)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn minimum_cacheable_sizes_are_conservative() {
+        assert_eq!(min_cacheable_tokens("claude-opus-4-6"), 4_096);
+        assert_eq!(min_cacheable_tokens("claude-haiku-4-5"), 2_048);
+        assert_eq!(min_cacheable_tokens("claude-sonnet-4-5"), 1_024);
+        assert_eq!(min_cacheable_tokens("gpt-5"), 1_024);
     }
 }

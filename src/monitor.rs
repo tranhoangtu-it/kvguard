@@ -18,8 +18,8 @@ use crate::provider::ApiKind;
 
 /// Turns kept in memory for display; totals still cover every turn.
 const MAX_TURNS: usize = 2_000;
-/// Below this many prompt tokens providers do not cache at all, so a zero read is not a miss.
-const MIN_CACHEABLE_TOKENS: u64 = 1_024;
+/// Default share of the expected cache read below which a turn is reported as PARTIAL.
+pub const DEFAULT_PARTIAL_THRESHOLD: f64 = 0.8;
 /// Weight of the newest prefill-speed measurement in the moving average.
 const PREFILL_EMA_WEIGHT: f64 = 0.3;
 
@@ -36,6 +36,9 @@ pub enum TurnStatus {
     Healed,
     /// Prefix matched, but the provider still reported no cache read (TTL expiry, eviction).
     Miss,
+    /// Prefix matched, but the provider read only part of what the previous turn cached
+    /// (provider-side cache collapse, lookback window exceeded).
+    Partial,
     /// Prefix broke against the parent turn.
     Bust,
     /// Upstream unreachable or returned an error.
@@ -83,6 +86,19 @@ pub struct TurnRecord {
     pub wasted_usd: f64,
     pub gpu_saved_s: f64,
     pub gpu_wasted_s: f64,
+    /// Previous turn of the same branch.
+    #[serde(default)]
+    pub parent_turn: Option<u64>,
+    /// Tokens the provider should serve from cache: what the parent turn read or wrote
+    /// (provider-reported, so it uses the provider's own tokenizer).
+    #[serde(default)]
+    pub expected_cached_tokens: Option<u64>,
+    /// The request asked for Anthropic's 1-hour cache TTL (cache writes cost 2× input).
+    #[serde(default)]
+    pub cache_ttl_1h: bool,
+    /// Extra findings (lookback window, rate limits) shown next to the root cause.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 impl TurnRecord {
@@ -108,6 +124,23 @@ impl TurnRecord {
             wasted_usd: 0.0,
             gpu_saved_s: 0.0,
             gpu_wasted_s: 0.0,
+            parent_turn: None,
+            expected_cached_tokens: None,
+            cache_ttl_1h: false,
+            notes: Vec::new(),
+        }
+    }
+
+    /// `(expected, cached)` when the provider reported a cache read for a prompt large
+    /// enough to be cached at all.
+    pub fn cache_expectation(&self) -> Option<(u64, u64)> {
+        let usage = self.usage.as_ref()?;
+        let cached = usage.cached_tokens?;
+        let min = crate::pricing::min_cacheable_tokens(&self.model);
+        match self.expected_cached_tokens {
+            Some(expected) => (expected >= min).then_some((expected, cached)),
+            // No parent measurement: only an empty read of a large prompt is meaningful.
+            None => (cached == 0 && usage.prompt_tokens.unwrap_or(0) >= min).then_some((1, 0)),
         }
     }
 
@@ -123,7 +156,7 @@ impl TurnRecord {
     }
 
     /// Status derived from the lineage verdict, analysis and provider usage.
-    fn derive_status(&self) -> TurnStatus {
+    fn derive_status(&self, partial_threshold: f64) -> TurnStatus {
         if self.error.is_some() {
             return TurnStatus::Error;
         }
@@ -133,15 +166,28 @@ impl TurnRecord {
         if self.match_kind == MatchKind::NewBranch {
             return TurnStatus::NewBranch;
         }
-        let provider_missed = self.usage.as_ref().is_some_and(|u| {
-            u.cached_tokens == Some(0) && u.prompt_tokens.unwrap_or(0) >= MIN_CACHEABLE_TOKENS
-        });
-        if provider_missed {
-            TurnStatus::Miss
-        } else if self.heal_actions.is_empty() {
-            TurnStatus::Hit
-        } else {
-            TurnStatus::Healed
+        match self.cache_expectation() {
+            Some((_, 0)) => TurnStatus::Miss,
+            Some((expected, cached)) if (cached as f64) < partial_threshold * expected as f64 => {
+                TurnStatus::Partial
+            }
+            _ if self.heal_actions.is_empty() => TurnStatus::Hit,
+            _ => TurnStatus::Healed,
+        }
+    }
+
+    /// Tokens re-billed / re-prefilled because they were not served from cache.
+    fn lost_tokens(&self) -> u64 {
+        let provider_shortfall = || {
+            self.cache_expectation()
+                .filter(|(expected, _)| self.expected_cached_tokens == Some(*expected))
+                .map(|(expected, cached)| expected.saturating_sub(cached))
+        };
+        match self.status {
+            TurnStatus::Partial | TurnStatus::Miss | TurnStatus::Bust => provider_shortfall()
+                .or_else(|| self.diagnosis.as_ref().map(|d| d.invalidated_tokens as u64))
+                .unwrap_or(0),
+            _ => 0,
         }
     }
 }
@@ -152,6 +198,10 @@ pub struct Totals {
     pub turns: u64,
     pub busts: u64,
     pub healed: u64,
+    #[serde(default)]
+    pub partials: u64,
+    #[serde(default)]
+    pub misses: u64,
     pub prompt_tokens: u64,
     pub cached_tokens: u64,
     pub est_prompt_tokens: u64,
@@ -169,6 +219,8 @@ impl Totals {
             turns: 1,
             busts: u64::from(record.status == TurnStatus::Bust),
             healed: u64::from(record.status == TurnStatus::Healed),
+            partials: u64::from(record.status == TurnStatus::Partial),
+            misses: u64::from(record.status == TurnStatus::Miss),
             prompt_tokens: usage.prompt_tokens.unwrap_or(0),
             cached_tokens: usage.cached_tokens.unwrap_or(0),
             est_prompt_tokens: record.est_prompt_tokens.unwrap_or(0),
@@ -184,6 +236,8 @@ impl Totals {
         self.turns += o.turns;
         self.busts += o.busts;
         self.healed += o.healed;
+        self.partials += o.partials;
+        self.misses += o.misses;
         self.prompt_tokens += o.prompt_tokens;
         self.cached_tokens += o.cached_tokens;
         self.est_prompt_tokens += o.est_prompt_tokens;
@@ -198,6 +252,8 @@ impl Totals {
         self.turns = self.turns.saturating_sub(o.turns);
         self.busts = self.busts.saturating_sub(o.busts);
         self.healed = self.healed.saturating_sub(o.healed);
+        self.partials = self.partials.saturating_sub(o.partials);
+        self.misses = self.misses.saturating_sub(o.misses);
         self.prompt_tokens = self.prompt_tokens.saturating_sub(o.prompt_tokens);
         self.cached_tokens = self.cached_tokens.saturating_sub(o.cached_tokens);
         self.est_prompt_tokens = self.est_prompt_tokens.saturating_sub(o.est_prompt_tokens);
@@ -252,6 +308,7 @@ pub struct Monitor {
     inner: RwLock<Inner>,
     prefill_tok_per_sec: Mutex<f64>,
     listen: RwLock<String>,
+    partial_threshold: Mutex<f64>,
 }
 
 impl Monitor {
@@ -262,7 +319,22 @@ impl Monitor {
             inner: RwLock::new(Inner::default()),
             prefill_tok_per_sec: Mutex::new(prefill_tok_per_sec),
             listen: RwLock::new(String::new()),
+            partial_threshold: Mutex::new(DEFAULT_PARTIAL_THRESHOLD),
         }
+    }
+
+    /// Share of the expected cache read below which a turn is PARTIAL (clamped to 0..=1).
+    pub fn set_partial_threshold(&self, threshold: f64) {
+        if let Ok(mut current) = self.partial_threshold.lock() {
+            *current = threshold.clamp(0.0, 1.0);
+        }
+    }
+
+    fn partial_threshold(&self) -> f64 {
+        self.partial_threshold
+            .lock()
+            .map(|v| *v)
+            .unwrap_or(DEFAULT_PARTIAL_THRESHOLD)
     }
 
     pub fn heal_enabled(&self) -> bool {
@@ -288,10 +360,13 @@ impl Monitor {
     pub fn add_turn(&self, mut record: TurnRecord) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         record.id = id;
-        refresh_record(&mut record, self.prefill_speed());
+        let (tok_per_sec, threshold) = (self.prefill_speed(), self.partial_threshold());
         let Ok(mut inner) = self.inner.write() else {
             return id;
         };
+        record.expected_cached_tokens =
+            expected_from_parent(&inner.turns, record.parent_turn, record.api);
+        refresh_record(&mut record, tok_per_sec, threshold);
         inner.totals.add(&Totals::of(&record));
         inner.turns.push_back(record);
         while inner.turns.len() > MAX_TURNS {
@@ -302,7 +377,7 @@ impl Monitor {
 
     /// Mutate a stored turn; status, costs and totals are recomputed.
     pub fn update(&self, id: u64, change: impl FnOnce(&mut TurnRecord)) {
-        let tok_per_sec = self.prefill_speed();
+        let (tok_per_sec, threshold) = (self.prefill_speed(), self.partial_threshold());
         let usage = {
             let Ok(mut inner) = self.inner.write() else {
                 return;
@@ -311,10 +386,19 @@ impl Monitor {
                 return;
             };
             let before = Totals::of(&inner.turns[pos]);
+            // The parent's usage may have arrived after this turn was registered.
+            let expected = expected_from_parent(
+                &inner.turns,
+                inner.turns[pos].parent_turn,
+                inner.turns[pos].api,
+            );
             let record = &mut inner.turns[pos];
             let usage_before = record.usage.clone();
             change(record);
-            refresh_record(record, tok_per_sec);
+            if expected.is_some() {
+                record.expected_cached_tokens = expected;
+            }
+            refresh_record(record, tok_per_sec, threshold);
             let after = Totals::of(record);
             // Calibrate only from a newly reported usage, never twice for the same turn.
             let new_usage = record
@@ -377,26 +461,142 @@ pub fn export_turns(turns: &[TurnRecord], path: &Path) -> Result<usize> {
     Ok(turns.len())
 }
 
-fn refresh_record(record: &mut TurnRecord, tok_per_sec: f64) {
-    record.status = record.derive_status();
+/// Prometheus text exposition of the running totals (`GET /__kvguard/metrics`).
+pub fn render_metrics(snapshot: &StateSnapshot) -> String {
+    let t = &snapshot.totals;
+    let counters: [(&str, &str, f64); 11] = [
+        ("kvguard_turns_total", "LLM requests seen", t.turns as f64),
+        (
+            "kvguard_busts_total",
+            "Requests that broke their parent's prefix",
+            t.busts as f64,
+        ),
+        (
+            "kvguard_partials_total",
+            "Intact prefixes only partly served from cache",
+            t.partials as f64,
+        ),
+        (
+            "kvguard_misses_total",
+            "Intact prefixes served nothing from cache",
+            t.misses as f64,
+        ),
+        (
+            "kvguard_healed_total",
+            "Requests rewritten by heal rules",
+            t.healed as f64,
+        ),
+        (
+            "kvguard_prompt_tokens_total",
+            "Provider-reported prompt tokens",
+            t.prompt_tokens as f64,
+        ),
+        (
+            "kvguard_cached_tokens_total",
+            "Provider-reported cached prompt tokens",
+            t.cached_tokens as f64,
+        ),
+        (
+            "kvguard_saved_usd_total",
+            "USD saved by cache reads (list prices)",
+            t.saved_usd,
+        ),
+        (
+            "kvguard_wasted_usd_total",
+            "USD lost to cache misses (list prices)",
+            t.wasted_usd,
+        ),
+        (
+            "kvguard_gpu_saved_seconds_total",
+            "Local prefill seconds avoided",
+            t.gpu_saved_s,
+        ),
+        (
+            "kvguard_gpu_wasted_seconds_total",
+            "Local prefill seconds lost",
+            t.gpu_wasted_s,
+        ),
+    ];
+    let mut out = String::new();
+    for (name, help, value) in counters {
+        out.push_str(&format!(
+            "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"
+        ));
+    }
+    if let Some(rate) = t.hit_rate() {
+        out.push_str(&format!(
+            "# HELP kvguard_cache_hit_ratio Cached share of prompt tokens\n\
+             # TYPE kvguard_cache_hit_ratio gauge\nkvguard_cache_hit_ratio {rate}\n"
+        ));
+    }
+    out.push_str(&format!(
+        "# HELP kvguard_heal_enabled Auto-heal state\n# TYPE kvguard_heal_enabled gauge\n\
+         kvguard_heal_enabled {}\n",
+        u8::from(snapshot.heal_enabled)
+    ));
+    out
+}
+
+/// One-line status for shell prompts and editor status lines.
+pub fn render_status_line(snapshot: &StateSnapshot) -> String {
+    let t = &snapshot.totals;
+    let hit = t
+        .hit_rate()
+        .map_or_else(|| "–".to_string(), |r| format!("{:.0}%", r * 100.0));
+    let mode = if snapshot.heal_enabled { "⚡" } else { "🔍" };
+    let mut line = format!("kvguard {mode} {hit} hit · ${:.2} saved", t.saved_usd);
+    for (count, label) in [
+        (t.busts, "bust"),
+        (t.partials, "partial"),
+        (t.misses, "miss"),
+    ] {
+        if count > 0 {
+            line.push_str(&format!(" · {count} {label}"));
+        }
+    }
+    line
+}
+
+/// What the provider should serve from cache on the next turn of a branch: the prefix the
+/// parent turn read or wrote (Anthropic), or the parent's whole prompt (OpenAI, llama.cpp).
+fn expected_from_parent(
+    turns: &VecDeque<TurnRecord>,
+    parent: Option<u64>,
+    api: ApiKind,
+) -> Option<u64> {
+    let parent = parent?;
+    let usage = turns
+        .iter()
+        .rev()
+        .find(|t| t.id == parent)?
+        .usage
+        .as_ref()?;
+    match api {
+        ApiKind::AnthropicMessages => {
+            let cached = usage.cached_tokens.unwrap_or(0) + usage.cache_write_tokens.unwrap_or(0);
+            (cached > 0).then_some(cached)
+        }
+        ApiKind::OpenAiChat | ApiKind::OpenAiResponses | ApiKind::OllamaChat => usage.prompt_tokens,
+    }
+}
+
+fn refresh_record(record: &mut TurnRecord, tok_per_sec: f64, partial_threshold: f64) {
+    record.status = record.derive_status(partial_threshold);
     let cached = record
         .usage
         .as_ref()
         .and_then(|u| u.cached_tokens)
         .unwrap_or(0);
-    let invalidated = record
-        .diagnosis
-        .as_ref()
-        .map(|d| d.invalidated_tokens as u64)
-        .unwrap_or(0);
+    let lost = record.lost_tokens();
     if record.local {
         record.saved_usd = 0.0;
         record.wasted_usd = 0.0;
         record.gpu_saved_s = pricing::prefill_seconds(cached, tok_per_sec);
-        record.gpu_wasted_s = pricing::prefill_seconds(invalidated, tok_per_sec);
+        record.gpu_wasted_s = pricing::prefill_seconds(lost, tok_per_sec);
     } else if let Some(price) = pricing::price_for(&record.model) {
+        let one_hour = record.cache_ttl_1h && record.api == ApiKind::AnthropicMessages;
         record.saved_usd = pricing::saved_usd(price, cached);
-        record.wasted_usd = pricing::wasted_usd(price, invalidated);
+        record.wasted_usd = pricing::wasted_usd(price, lost, one_hour);
     }
 }
 
@@ -444,6 +644,89 @@ mod tests {
             });
         });
         assert_eq!(monitor.snapshot().turns[0].status, TurnStatus::Miss);
+    }
+
+    fn usage(prompt: u64, cached: u64, written: u64) -> Usage {
+        Usage {
+            prompt_tokens: Some(prompt),
+            cached_tokens: Some(cached),
+            cache_write_tokens: Some(written),
+            ..Usage::default()
+        }
+    }
+
+    #[test]
+    fn collapsed_cache_read_on_intact_prefix_is_partial() {
+        let monitor = Monitor::new(false, 850.0);
+        let parent = monitor.add_turn(record(MatchKind::NewBranch));
+        monitor.update(parent, |t| t.usage = Some(usage(640_300, 600_000, 40_212)));
+
+        let mut child = record(MatchKind::Continuation);
+        child.parent_turn = Some(parent);
+        let id = monitor.add_turn(child);
+        monitor.update(id, |t| t.usage = Some(usage(641_000, 25_165, 615_835)));
+
+        let snap = monitor.snapshot();
+        let turn = snap.turns.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(turn.status, TurnStatus::Partial);
+        assert_eq!(turn.expected_cached_tokens, Some(640_212));
+        // (640,212 − 25,165) tokens re-written at Sonnet's 5-minute rates: $3.75 − $0.30 per M.
+        let expected_waste = (640_212.0 - 25_165.0) / 1e6 * (3.75 - 0.3);
+        assert!((turn.wasted_usd - expected_waste).abs() < 1e-9);
+        assert_eq!(snap.totals.partials, 1);
+    }
+
+    #[test]
+    fn one_hour_ttl_doubles_write_cost() {
+        let monitor = Monitor::new(false, 850.0);
+        let parent = monitor.add_turn(record(MatchKind::NewBranch));
+        monitor.update(parent, |t| t.usage = Some(usage(10_000, 0, 10_000)));
+        let mut child = record(MatchKind::Continuation);
+        child.parent_turn = Some(parent);
+        child.cache_ttl_1h = true;
+        let id = monitor.add_turn(child);
+        monitor.update(id, |t| t.usage = Some(usage(10_500, 0, 10_500)));
+        let turn = monitor
+            .snapshot()
+            .turns
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(turn.status, TurnStatus::Miss);
+        assert!((turn.wasted_usd - 10_000.0 / 1e6 * (6.0 - 0.3)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn small_prompts_never_raise_cache_alerts() {
+        let monitor = Monitor::new(false, 850.0);
+        let parent = monitor.add_turn(record(MatchKind::NewBranch));
+        monitor.update(parent, |t| t.usage = Some(usage(600, 0, 600)));
+        let mut child = record(MatchKind::Continuation);
+        child.parent_turn = Some(parent);
+        let id = monitor.add_turn(child);
+        monitor.update(id, |t| t.usage = Some(usage(700, 0, 700)));
+        let turn = monitor
+            .snapshot()
+            .turns
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(turn.status, TurnStatus::Hit);
+    }
+
+    #[test]
+    fn metrics_and_status_line_render_totals() {
+        let monitor = Monitor::new(true, 850.0);
+        let id = monitor.add_turn(record(MatchKind::Continuation));
+        monitor.update(id, |t| t.usage = Some(usage(10_000, 9_000, 0)));
+        let snap = monitor.snapshot();
+        let metrics = render_metrics(&snap);
+        assert!(metrics.contains("kvguard_turns_total 1"));
+        assert!(metrics.contains("kvguard_cached_tokens_total 9000"));
+        assert!(metrics.contains("kvguard_cache_hit_ratio 0.9"));
+        assert!(metrics.contains("# TYPE kvguard_partials_total counter"));
+        let line = render_status_line(&snap);
+        assert!(line.starts_with("kvguard ⚡ 90% hit"), "{line}");
     }
 
     #[test]

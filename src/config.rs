@@ -108,6 +108,8 @@ pub struct Config {
     pub prefill_tok_per_sec: f64,
     /// Append every (post-heal) request body to this JSONL file for later `kvguard check`.
     pub record: Option<PathBuf>,
+    /// Share of the expected cache read below which an intact-prefix turn is PARTIAL.
+    pub partial_threshold: f64,
 }
 
 impl Config {
@@ -121,6 +123,7 @@ impl Config {
             chat_template: None,
             prefill_tok_per_sec: DEFAULT_PREFILL_TOK_PER_SEC,
             record: None,
+            partial_threshold: crate::monitor::DEFAULT_PARTIAL_THRESHOLD,
         }
     }
 }

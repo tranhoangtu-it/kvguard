@@ -72,6 +72,7 @@ pub async fn run(args: &ProxyArgs, command: &[String]) -> Result<ExitCode> {
         config.heal_on_start,
         config.prefill_tok_per_sec,
     ));
+    monitor.set_partial_threshold(config.partial_threshold);
     let state = AppState::new(config, Arc::clone(&monitor))?;
     let listener = proxy::bind(args.port).await?;
     let url = format!("http://{}", listener.local_addr()?);
@@ -146,7 +147,10 @@ pub fn render_summary(snapshot: &StateSnapshot) -> String {
             fmt_duration(totals.gpu_wasted_s)
         ));
     }
-    out.push_str(&format!(" · {} bust(s)\n", totals.busts));
+    out.push_str(&format!(
+        " · {} bust(s) · {} partial · {} miss\n",
+        totals.busts, totals.partials, totals.misses
+    ));
     let busts = snapshot
         .turns
         .iter()
