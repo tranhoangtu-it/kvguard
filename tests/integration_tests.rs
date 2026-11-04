@@ -453,6 +453,126 @@ async fn test_partial_cache_read_on_intact_prefix_is_flagged() {
     assert!(metrics.contains("kvguard_partials_total 1"), "{metrics}");
 }
 
+/// llama-server `/apply-template` stand-in whose template drops `reasoning_content` from every
+/// assistant turn except the last one — the Qwen-style drift, rendered server-side.
+struct DriftingTemplate;
+
+impl wiremock::Respond for DriftingTemplate {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+        let messages = body["messages"].as_array().cloned().unwrap_or_default();
+        let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant");
+        let mut prompt = String::new();
+        for (i, m) in messages.iter().enumerate() {
+            prompt.push_str(&format!("<{}>", m["role"].as_str().unwrap_or("")));
+            if Some(i) == last_assistant
+                && let Some(r) = m["reasoning_content"].as_str()
+            {
+                prompt.push_str(&format!("<think>{r}</think>"));
+            }
+            prompt.push_str(m["content"].as_str().unwrap_or(""));
+            prompt.push('\n');
+        }
+        prompt.push_str("<assistant>");
+        ResponseTemplate::new(200).set_body_json(json!({ "prompt": prompt }))
+    }
+}
+
+/// `/tokenize` stand-in: one token per character.
+struct CharTokenizer;
+
+impl wiremock::Respond for CharTokenizer {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+        let tokens: Vec<u64> = body["content"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .map(u64::from)
+            .collect();
+        ResponseTemplate::new(200).set_body_json(json!({ "tokens": tokens }))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_llama_server_exact_tokens_reveal_template_drift() {
+    let harness = Harness::start(false, |_| {}).await;
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"total_slots": 1, "default_generation_settings": {}})),
+        )
+        .mount(&harness.upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/apply-template"))
+        .respond_with(DriftingTemplate)
+        .mount(&harness.upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/tokenize"))
+        .respond_with(CharTokenizer)
+        .mount(&harness.upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"choices": []})))
+        .mount(&harness.upstream)
+        .await;
+
+    let parent_messages = vec![
+        json!({"role": "user", "content": "List the files."}),
+        json!({"role": "assistant", "content": "Calling ls.", "reasoning_content": "use ls"}),
+        json!({"role": "tool", "content": "a.rs b.rs"}),
+    ];
+    let parent = json!({"model": "qwen3", "messages": parent_messages});
+    let mut current_messages = parent_messages.clone();
+    current_messages
+        .push(json!({"role": "assistant", "content": "Done.", "reasoning_content": "sum"}));
+    current_messages.push(json!({"role": "user", "content": "Thanks."}));
+    let current = json!({"model": "qwen3", "messages": current_messages});
+    let sub_agent = json!({"model": "qwen3", "messages": [
+        {"role": "system", "content": "You are a search sub-agent."},
+        {"role": "user", "content": "find *.rs"}
+    ]});
+
+    harness.post("/v1/chat/completions", &parent).await;
+    harness.post("/v1/chat/completions", &current).await;
+    harness.post("/v1/chat/completions", &sub_agent).await;
+    let deadline = tokio::time::Instant::now() + ANALYSIS_TIMEOUT;
+    let turns = loop {
+        let turns = harness.monitor.snapshot().turns;
+        let ready = turns.len() == 3 && turns[1].diagnosis.is_some();
+        if ready || tokio::time::Instant::now() > deadline {
+            break turns;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    assert_eq!(
+        turns[1].match_kind,
+        MatchKind::Continuation,
+        "JSON prefix intact"
+    );
+    let diagnosis = turns[1]
+        .diagnosis
+        .as_ref()
+        .expect("server-side drift detected");
+    assert_eq!(diagnosis.kind, MutationKind::JinjaTemplateDrift);
+    assert!(diagnosis.exact_tokens);
+    // "<user>List the files.\n<assistant>" is 33 chars; the parent then renders "<think>…".
+    assert_eq!(
+        diagnosis.divergence_token,
+        "<user>List the files.\n<assistant>".len()
+    );
+    assert!(
+        turns[2].notes.iter().any(|n| n.contains("-np 2")),
+        "single-slot advice: {:?}",
+        turns[2].notes
+    );
+}
+
 #[test]
 fn test_ci_gate_exit_code() {
     let dir = fixture("history-mutation");

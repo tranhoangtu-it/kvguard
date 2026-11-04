@@ -58,6 +58,56 @@ pub struct Diagnosis {
     pub current_excerpt: String,
     pub parent_window: Vec<String>,
     pub current_window: Vec<String>,
+    /// Token positions come from the inference server's own template + tokenizer.
+    #[serde(default)]
+    pub exact_tokens: bool,
+}
+
+/// Token differences at the very end of the parent prompt that only come from BPE merges
+/// across the boundary (e.g. `"\n"` joining the next word); the server re-evaluates just
+/// these few tokens, so they are not reported as drift.
+pub const BOUNDARY_TOKEN_TOLERANCE: usize = 4;
+
+/// Re-anchor a diagnosis on exact server token ids, or report template drift that only the
+/// server-rendered prompt reveals (JSON prefix intact, rendered tokens diverge).
+pub fn apply_exact_tokens(
+    diagnosis: Option<Diagnosis>,
+    parent: (&str, &[u64]),
+    current: (&str, &[u64]),
+) -> Option<Diagnosis> {
+    let (parent_text, parent_tokens) = parent;
+    let (current_text, current_tokens) = current;
+    let common = parent_tokens
+        .iter()
+        .zip(current_tokens)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let parent_len = parent_tokens.len();
+    let with_exact = |mut d: Diagnosis| {
+        d.divergence_token = common;
+        d.parent_tokens = parent_len;
+        d.invalidated_tokens = parent_len.saturating_sub(common);
+        d.exact_tokens = true;
+        d
+    };
+    match diagnosis {
+        Some(d) => Some(with_exact(d)),
+        None if parent_len.saturating_sub(common) > BOUNDARY_TOKEN_TOLERANCE => {
+            let tokens = token_diff::diverge(parent_text, current_text);
+            let (old_value, new_value) = (
+                tokens.parent_excerpt.clone(),
+                tokens.current_excerpt.clone(),
+            );
+            Some(with_exact(build(
+                MutationKind::JinjaTemplateDrift,
+                "chat_template(messages)".to_string(),
+                old_value,
+                new_value,
+                tokens,
+            )))
+        }
+        None => None,
+    }
 }
 
 /// Diagnose a broken prefix. Runs the JSON diff first; when the JSON prefix is intact and a
@@ -151,5 +201,30 @@ fn build(
         current_excerpt: tokens.current_excerpt,
         parent_window: tokens.parent_window,
         current_window: tokens.current_window,
+        exact_tokens: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_tokens_ignore_boundary_merges_but_catch_drift() {
+        let parent: Vec<u64> = (0..100).collect();
+        let mut boundary = parent[..98].to_vec();
+        boundary.extend([500, 501, 502]);
+        assert!(apply_exact_tokens(None, ("p", &parent), ("p2", &boundary)).is_none());
+
+        let mut drifted = parent[..40].to_vec();
+        drifted.extend(900..960);
+        let d =
+            apply_exact_tokens(None, ("abc<think>x", &parent), ("abcx", &drifted)).expect("drift");
+        assert_eq!(d.kind, MutationKind::JinjaTemplateDrift);
+        assert_eq!(
+            (d.divergence_token, d.parent_tokens, d.invalidated_tokens),
+            (40, 100, 60)
+        );
+        assert!(d.exact_tokens);
     }
 }

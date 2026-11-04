@@ -92,9 +92,12 @@ Web dashboard, cơ sở dữ liệu ngoài, semantic/embedding cache, response c
 | P1-4 Cảnh báo OpenAI > 15 req/phút/key | ✅ (ghi chú trên lượt) |
 | P1-5 `kvguard status --line` | ✅ |
 | P1-6 Trusted Publishing npm/PyPI | ✅ workflow sẵn sàng, bật bằng biến `PUBLISH_NPM` / `PUBLISH_PYPI` |
-| P1-1 Token chính xác qua llama-server | ⏳ còn lại — cần đưa phân tích nền sang async |
-| P1-2 Heal lookback | ⏳ còn lại — client thường đã dùng đủ 4 breakpoint |
-| P2 | ⏳ còn lại |
+| P1-1 Token chính xác qua llama-server | ✅ `/apply-template` + `/tokenize`; tự phát hiện template drift không cần `--chat-template` (bỏ qua ≤ 4 token lệch ở ranh giới BPE) |
+| P2 Gợi ý cờ llama-server | ✅ ghi chú `-np 2` khi server 1 slot có thêm sub-agent |
+| P1-2 Heal lookback | ❌ không làm — client (Claude Code) thường đã dùng đủ 4 breakpoint; tự chèn sẽ phá cơ chế client tự quản |
+| P2 Lưu/khôi phục slot | ⏳ để sau — cần `--slot-save-path`, lợi ích thấp |
+| P2 Giảm RAM | ⏳ để sau — phát hiện template drift cần JSON của lượt cha |
+| P2 `count_tokens` cho Claude | ❌ không làm — tốn quota người dùng |
 
 **Quyết định cho các câu hỏi mở:** ngưỡng PARTIAL cấu hình được (mặc định 0.8); bảng ngưỡng tối thiểu dùng giá trị thận trọng (Opus 4096, Haiku/Sonnet 4.6+ 2048, còn lại 1024) — chỉ có thể *giảm* cảnh báo, không tạo cảnh báo sai; không gọi `count_tokens`.
 

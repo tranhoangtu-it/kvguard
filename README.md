@@ -109,6 +109,7 @@ The npm and Python launchers download the release binary for your platform on fi
 | **MISS** with an intact prefix | cache TTL expiry, eviction | 🔎 reported, not blamed on your client |
 | **PARTIAL** with an intact prefix | provider-side cache collapse; more than 20 content blocks since the last cache point (Anthropic's lookback window); >15 req/min on one OpenAI cache key | 🔎 reported with expected vs. actual cached tokens and the likely reason |
 | sub-agent evicting the main KV slot | llama-server with parallel slots | ✅ main pinned to `id_slot 0`, sub-agents rotate |
+| sub-agent sharing a single-slot llama-server | llama-server started without `-np` | 🔎 advises `-np 2` or more |
 
 ## How it works
 
@@ -189,7 +190,7 @@ Toggling heal mid-session rebuilds the prefix once — that is expected and show
 
 ## Accuracy, honestly
 
-- **JSON paths, byte offsets and provider usage are exact.** Token indexes are estimates using `o200k_base` — exact for GPT-4o/GPT-5-family, approximate for Claude (tokenizer not public) and local models.
+- **JSON paths, byte offsets and provider usage are exact.** Against **llama-server**, token indexes are exact too: kvguard renders both turns with the server's own `/apply-template` and `/tokenize`, which also reveals chat-template drift without `--chat-template`. Elsewhere token indexes are `o200k_base` estimates — exact for GPT-4o/GPT-5-family, approximate for Claude (tokenizer not public).
 - **Prices** are built-in list prices; unknown model versions fall back to their family.
 - **Clients must honor base-URL variables.** Cursor sends requests through its own backend, so no local proxy can see them.
 - **Ollama doesn't report reused tokens**, so its hit rate is estimated from the request diff.
@@ -228,9 +229,9 @@ The proxy listens on `127.0.0.1` only. Control endpoints (`/__kvguard/*`) reject
 
 ## Roadmap
 
-Shipped in 0.2: provider-truth cost accounting, `PARTIAL` detection, model-aware minimum sizes, Anthropic lookback and OpenAI per-key rate findings, TTL-aware pricing, Prometheus metrics, `status --line`, trusted publishing.
+Shipped in 0.2: provider-truth cost accounting, `PARTIAL` detection, model-aware minimum sizes, Anthropic lookback and OpenAI per-key rate findings, TTL-aware pricing, exact llama-server tokenization with automatic template-drift detection, single-slot advice, Prometheus metrics, `status --line`, trusted publishing.
 
-Next: exact local tokenization via llama-server `/tokenize`, healing long tool loops past the lookback window, llama-server slot save/restore. See [the analysis and roadmap](docs/kvguard-problem-analysis-and-roadmap.md).
+Next: llama-server slot save/restore across restarts and a lighter memory footprint for long sessions. See [the analysis and roadmap](docs/kvguard-problem-analysis-and-roadmap.md).
 
 ## Development
 

@@ -202,8 +202,19 @@ impl AppState {
         backend: Backend,
         body: &Value,
         outcome: &MatchOutcome,
+        branches: usize,
     ) -> Vec<String> {
         let mut notes = Vec::new();
+        if backend == (Backend::LlamaCpp { slots: 1 })
+            && outcome.kind == MatchKind::NewBranch
+            && branches > 1
+        {
+            notes.push(
+                "llama-server has a single slot: this branch evicts the main conversation's \
+                 KV cache — start it with -np 2 (or more)"
+                    .to_string(),
+            );
+        }
         if api == ApiKind::AnthropicMessages
             && let Some(parent) = &outcome.parent
         {
@@ -354,7 +365,8 @@ impl AppState {
         record.local = backend.is_local();
         record.heal_actions = actions;
         record.cache_ttl_1h = requests_one_hour_ttl(&value);
-        record.notes = self.request_notes(api, backend, &value, &outcome);
+        let branches = self.tree.lock().map(|t| t.branch_count()).unwrap_or(0);
+        record.notes = self.request_notes(api, backend, &value, &outcome, branches);
         if outcome.kind != MatchKind::NewBranch {
             record.parent_turn = self
                 .last_turn
@@ -366,18 +378,60 @@ impl AppState {
         if let Ok(mut last) = self.last_turn.lock() {
             last.insert(outcome.branch_id, id);
         }
-        self.spawn_analysis(id, outcome, snapshot);
+        self.spawn_analysis(id, outcome, snapshot, backend, base);
         Prepared {
             body,
             turn: Some((id, api)),
         }
     }
 
-    fn spawn_analysis(&self, id: u64, outcome: MatchOutcome, current: Snapshot) {
+    /// Token-level analysis off the request path. Against llama-server the server's own
+    /// template and tokenizer replace the o200k estimate (and reveal template drift).
+    fn spawn_analysis(
+        &self,
+        id: u64,
+        outcome: MatchOutcome,
+        current: Snapshot,
+        backend: Backend,
+        base: &str,
+    ) {
         let monitor = Arc::clone(&self.monitor);
         let jinja = self.jinja.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = analyze(outcome.parent.as_ref(), &current, jinja.as_deref());
+        let client = self.client.clone();
+        let base = base.to_string();
+        tokio::spawn(async move {
+            let parent = outcome.parent.clone();
+            let snapshot = current.clone();
+            let Ok(mut result) = tokio::task::spawn_blocking(move || {
+                analyze(parent.as_ref(), &snapshot, jinja.as_deref())
+            })
+            .await
+            else {
+                return;
+            };
+            let exact =
+                matches!(backend, Backend::LlamaCpp { .. }) && current.api == ApiKind::OpenAiChat;
+            if let (true, Some(parent)) = (exact, outcome.parent.as_ref()) {
+                let (parent_render, current_render) = tokio::join!(
+                    local_llm::render_and_tokenize(&client, &base, &parent.body),
+                    local_llm::render_and_tokenize(&client, &base, &current.body),
+                );
+                if let (Some((p_text, p_tokens)), Some((c_text, c_tokens))) =
+                    (parent_render, current_render)
+                {
+                    result.diagnosis = crate::diff::apply_exact_tokens(
+                        result.diagnosis.take(),
+                        (&p_text, &p_tokens),
+                        (&c_text, &c_tokens),
+                    );
+                    let reused = result
+                        .diagnosis
+                        .as_ref()
+                        .map_or(p_tokens.len(), |d| d.divergence_token);
+                    result.est_prompt_tokens = c_tokens.len() as u64;
+                    result.est_reused_tokens = reused as u64;
+                }
+            }
             monitor.update(id, |turn| {
                 turn.diagnosis = result.diagnosis;
                 turn.est_prompt_tokens = Some(result.est_prompt_tokens);
