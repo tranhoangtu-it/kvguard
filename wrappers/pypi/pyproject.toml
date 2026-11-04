@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "kvguard"
 version = "0.1.0"
 description = "Local proxy & TUI that catches 1-token prompt/KV cache prefix misses and auto-heals requests for Anthropic, OpenAI, llama.cpp and Ollama."
+readme = "README.md"
 license = "MIT OR Apache-2.0"
 # 3.12+ guarantees tarfile's safe "data" extraction filter.
 requires-python = ">=3.12"
