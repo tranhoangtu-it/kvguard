@@ -1,161 +1,216 @@
+<div align="center">
+
 # kvguard
 
-**Local proxy & TUI that catches 1-token prompt/KV cache prefix misses in real time — and can heal them before the request leaves your machine.**
+### Your prompt cache is silently breaking. kvguard shows you where, why, and what it costs — then fixes it.
 
-Works with Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions`, `/v1/responses`), llama.cpp `llama-server`, Ollama, and any OpenAI-compatible local server. One static Rust binary. No Docker, no database, no account.
+[![CI](https://github.com/tranhoangtu-it/kvguard/actions/workflows/ci.yml/badge.svg)](https://github.com/tranhoangtu-it/kvguard/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tranhoangtu-it/kvguard?color=f5a623)](https://github.com/tranhoangtu-it/kvguard/releases)
+[![npm](https://img.shields.io/npm/v/kvguard?color=cb3837&logo=npm)](https://www.npmjs.com/package/kvguard)
+[![PyPI](https://img.shields.io/pypi/v/kvguard?color=3775a9&logo=pypi&logoColor=white)](https://pypi.org/project/kvguard/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+
+**Anthropic · OpenAI · llama.cpp · Ollama · any OpenAI-compatible server**<br>
+One ~6 MB download. No Docker. No database. No account. Nothing leaves your machine.
 
 ```bash
-kvguard --heal -- claude                                  # Claude Code against the Anthropic API
-kvguard --heal --target http://127.0.0.1:8080 -- opencode # any agent against llama-server
-kvguard check recorded.jsonl --fail-on-bust               # CI gate
+npx kvguard --heal -- claude
 ```
 
-## Why
+</div>
 
-Prompt caches (Anthropic, OpenAI) and local KV caches (llama.cpp, vLLM, Ollama) only reuse work when the new prompt starts with **exactly** the same bytes as a previous one, in order `tools → system → messages`. One changed token near the top — a rotating header, a timestamp, MCP tools serialized in a different order, a rewritten history message, a chat template that renders an old turn differently — and everything after it is billed or prefilled again. Nothing errors. You just pay more and wait longer.
+---
 
-kvguard sits between your agent and the model and, for every request:
+## The problem nobody sees
 
-1. **Finds the conversation it continues** — sub-agents, title generators and parallel sessions get their own branch, so they are never reported as busts of the main session.
-2. **Diffs it against the previous turn of that branch** and, if the prefix broke, reports *where* (JSON path + token index) and *why*.
-3. **Optionally rewrites it** (`--heal`) so the prefix stays byte-stable.
-4. **Reads real cache usage** from the response stream (`cache_read_input_tokens`, `cached_tokens`, llama.cpp `timings.cache_n`) without buffering it.
+Prompt caches (Anthropic, OpenAI) and local KV caches (llama.cpp, Ollama, vLLM) only reuse work when your new prompt starts with **exactly** the same bytes as the previous one, in order `tools → system → messages`.
 
-## What it detects
+Change **one token** near the top and everything after it is billed — or prefilled on your GPU — again:
 
-| Cause | Typical source | Healable |
-|---|---|---|
-| `tools[] order shuffled` | MCP servers starting asynchronously | ✅ sort by name |
-| `tool schema key order changed` | non-deterministic JSON Schema serialization | ✅ RFC 8785 key ordering |
-| `volatile header/id in system` | Claude Code `x-anthropic-billing-header: cch=…` against non-Anthropic backends, request ids | ✅ strip (local / third-party backends only) |
-| `timestamp in prefix` | `Current time: …` with seconds in the system prompt | ✅ pin per session |
-| `history message mutated` | context compaction, placeholder injection, truncated tool output | ❌ reported with path |
-| `chat template drift` | Qwen/DeepSeek templates dropping `<think>` from earlier turns | ✅ `--normalize-think-tags` |
-| `system prompt changed`, `tool set changed`, `tool definition changed` | real edits | ❌ reported |
-| provider **MISS** with an intact prefix | cache TTL expiry / eviction | ❌ reported |
+- Claude Code inserts a rotating `x-anthropic-billing-header: cch=…` at the top of the system prompt.
+- MCP servers finish starting in a different order, so `tools[]` is serialized differently each session.
+- A `Current time: 2026-11-04T19:42:07Z` line changes every turn.
+- A compaction step rewrites one old message.
+- A Qwen chat template silently drops `<think>` from an earlier turn.
 
-Sub-agent requests and llama-server slots: with `--heal`, the main conversation is pinned to `id_slot: 0` and sub-agents rotate through the other slots, so a short sub-agent prompt can't evict the main agent's KV cache.
+**Nothing errors.** Responses look identical. The only symptom is your bill and your wait time.
+
+> **Example math (Claude Sonnet 4.5, $3/M input):** re-writing an 80K-token context instead of reading it from cache costs about **$0.28** per broken turn (5-minute TTL) or **$0.46** with the 1-hour TTL. At 40 broken turns a day that is **$11–18/day for one developer**. On a local GPU at ~850 tok/s, the same miss costs **~94 seconds** of prefill.
+
+## What kvguard does
+
+kvguard is a local proxy with a terminal UI. It sits between your agent and the model and, **for every request**:
+
+| | |
+|---|---|
+| 🧭 **Tracks the conversation** | Matches each request to the branch it continues, so sub-agents, title generators and parallel sessions never show up as false alarms. |
+| 🔬 **Diffs the prefix** | When it breaks, reports the exact **JSON path**, the **token index**, and a **root cause** — not "cache miss". |
+| 💸 **Measures the damage** | Reads real cache usage from the response stream (`cache_read_input_tokens`, `cached_tokens`, llama.cpp `cache_n`) without delaying a single byte. |
+| 🩹 **Heals it (opt-in)** | Rewrites requests so the prefix stays byte-stable: sorts tools, canonicalizes schemas, strips volatile headers, pins timestamps, routes llama.cpp slots. |
+| 🚦 **Gates CI** | Replays recorded traffic and fails the build when a code change breaks the cache. |
+
+## 60-second start
+
+```bash
+# Wrap any agent. kvguard points it at itself, stays silent, and prints a summary on exit.
+npx kvguard --heal -- claude
+
+# In a second terminal: the live dashboard.
+npx kvguard attach
+```
+
+```
+┌ kvguard v0.1.1 · http://127.0.0.1:4141 ──────────────────────────────────────────────────────────────────┐
+│ 🔥 AUTO-HEAL: ON  │  CACHE HIT 97.4%  │  TOKENS SAVED 1.42M tok  │  $4.82 saved | $0.14 wasted  │  GPU … │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Turn  Branch / Slot    Model               Prefix Health  Hit %  Root Cause / Action
+ #03   main             claude-sonnet-4-5   [██████████]    98%   ✅ HIT
+ #04   main             claude-sonnet-4-5   [█░░░░░░░░░]    12%   ❌ BUST @ tok ~#418 (timestamp in prefix · system[1].text)
+ #05   main             claude-sonnet-4-5   [██████████]    96%   ⚡ HEALED (sorted 48 tools + pinned 1 timestamp(s))
+ #06   sub-1            claude-haiku-4-5    [··········]     –    ◆ NEW BRANCH
+┌ X-Ray Diff Inspector [JSON AST] ─────────────────────────────────────────────────────────────────────────┐
+│ Divergence at Token ~#418 / 41,950 (o200k est.) │ JSON Path: system[1].text │ Impact: -$0.142           │
+│ - Turn N-1: Current time: 2026-11-04T19:42:07Z                                                           │
+│ + Turn N:   Current time: 2026-11-04T19:43:12Z                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ [h] Toggle Auto-Heal  [d] View: JSON AST / Tokens  [f] Filter: Busts Only  [e] Export Trace  [q] Quit
+```
+
+Local models work the same way:
+
+```bash
+npx kvguard --heal --target http://127.0.0.1:8080 -- opencode   # llama-server
+npx kvguard --heal --target http://127.0.0.1:11434 -- my-agent  # Ollama
+```
 
 ## Install
 
-Prebuilt binaries for Linux (x86_64/aarch64, static musl), macOS (Intel/Apple Silicon) and Windows (x86_64) are attached to each [GitHub release](https://github.com/tranhoangtu-it/kvguard/releases), with SHA-256 checksums.
+| Method | Command |
+|---|---|
+| npm | `npx kvguard …` or `npm i -g kvguard` |
+| Python | `uvx kvguard …` or `pipx run kvguard …` |
+| Binary | [GitHub Releases](https://github.com/tranhoangtu-it/kvguard/releases) — Linux x86_64/arm64 (static musl), macOS Intel/Apple Silicon, Windows x86_64, each with a SHA-256 checksum |
+| Source | `cargo install --git https://github.com/tranhoangtu-it/kvguard --locked` |
+
+The npm and Python launchers download the release binary for your platform on first run and verify its checksum before executing it.
+
+## What it catches
+
+| Root cause | Typical source | `--heal` |
+|---|---|---|
+| `tools[] order shuffled` | MCP servers starting asynchronously | ✅ sorted by name |
+| `tool schema key order changed` | non-deterministic JSON Schema serialization | ✅ RFC 8785 key order |
+| `volatile header/id in system` | Claude Code `cch=` header on non-Anthropic backends, request ids | ✅ stripped (local & third-party backends only) |
+| `timestamp in prefix` | `Current time: …` with seconds | ✅ pinned per session |
+| `chat template drift` | Qwen/DeepSeek templates dropping `<think>` from old turns | ✅ `--normalize-think-tags` |
+| `history message mutated` | compaction, placeholders, truncated tool output | 🔎 reported with the exact JSON path |
+| `system prompt changed` · `tool set changed` | real edits | 🔎 reported |
+| **MISS** with an intact prefix | cache TTL expiry, eviction | 🔎 reported, not blamed on your client |
+| sub-agent evicting the main KV slot | llama-server with parallel slots | ✅ main pinned to `id_slot 0`, sub-agents rotate |
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Your agent] -->|request| P
+    subgraph P[kvguard · 127.0.0.1]
+      direction TB
+      H[Heal rules<br/>opt-in] --> B[Block hashing<br/>xxh64 per tool / system / message]
+      B --> L[Lineage tree<br/>continuation · mutation · new branch]
+      L --> R[Routing hints<br/>cache_control · prompt_cache_key · id_slot]
+    end
+    P -->|forward| U[Model API / local server]
+    U -->|SSE stream, chunk by chunk| T[Usage tap] --> A
+    L -.->|off the request path| D[Token + JSON-AST + template diff] --> M[Monitor] --> TUI[TUI · attach · summary · CI]
+```
+
+- **Inline work is hashing and comparison only.** Tokenization and diffing run in the background; response bodies stream through untouched, so time-to-first-token does not change.
+- **Lineage, not "previous request".** Each request is matched to the branch whose last turn is its prefix, or — if the prefix broke — to the branch that shares its history. Unrelated requests start a new branch instead of raising an alarm.
+- **Provider truth beats estimates.** Hit rate and dollar figures come from the usage fields the provider returns; token estimates fill the gaps and are labeled as such.
+
+## CI gate
+
+Catch cache regressions in code review, before they reach anyone's bill:
 
 ```bash
-cargo install --git https://github.com/tranhoangtu-it/kvguard --locked   # from source
-```
-
-Launchers for `npx kvguard` and `uvx kvguard` / `pipx run kvguard` live in [`wrappers/`](wrappers): on first run they download the release binary for your platform, verify its SHA-256 checksum and execute it. They are not yet published to npm or PyPI.
-
-Verified end to end against a local Ollama 0.35 (`qwen2.5:7b-instruct`): the second turn of a conversation was classified `HIT`, and Ollama reported 1,619 of 1,635 prompt tokens cached.
-
-## Usage
-
-### Wrap a command (most common)
-
-```bash
-kvguard [--heal] [--port 4141] [--target URL] -- <command> [args...]
-```
-
-kvguard starts the proxy on `127.0.0.1:4141` (or a free port), runs the command with `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `OLLAMA_HOST` pointing at it, stays silent while the tool owns the terminal, and prints a summary when it exits. The wrapped command's exit code is passed through.
-
-Upstreams default to your original `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `OLLAMA_HOST`, else the official APIs; `--target` sends everything to one server.
-
-Open the live TUI from a second terminal:
-
-```bash
-kvguard attach
-```
-
-### Standalone proxy + TUI
-
-```bash
-kvguard --heal            # full-screen TUI, then point clients at the printed URL
-kvguard --no-tui          # one line per request (logs, servers)
-```
-
-```
-┌ kvguard v0.1.0 · http://127.0.0.1:4141 ───────────────────────────────────────────────────────────┐
-│ 🔥 AUTO-HEAL: ON  │  CACHE HIT 97.4%  │  TOKENS SAVED 1.42M tok  │  $4.82 saved | $0.14 wasted  │ … │
-└───────────────────────────────────────────────────────────────────────────────────────────────────┘
- Turn  Branch / Slot    Model               Prefix Health  Hit %  Root Cause / Action
- #04   main [slot 0]    claude-sonnet-4-5   [█░░░░░░░░░]   12%    ❌ BUST @ tok ~#418 (volatile header/id in system · system[0].text)
- #05   main [slot 0]    claude-sonnet-4-5   [██████████]   96%    ⚡ HEALED (sorted 48 tools + stripped cch= billing header)
-```
-
-Keys: `j/k` select · `h` toggle auto-heal · `d` JSON-AST / token view · `f` busts only · `e` export trace (.jsonl) · `q` quit.
-
-### CI gate
-
-Record real traffic, then fail builds that break the prefix:
-
-```bash
-kvguard --record trace.jsonl -- my-agent run-scenario
+kvguard --record trace.jsonl -- my-agent run-scenario   # record once
 kvguard check trace.jsonl --fail-on-bust --min-hit-rate 0.95
 ```
 
-`check` accepts `.json` files (one request body, or `{"path": "/v1/messages", "request": {...}}`) and `.jsonl` traces, expands globs itself (PowerShell-friendly), prints a Markdown report and exits `1` on failure:
-
-```
-| # | source      | branch | verdict           | reused / parent prefix (est. tokens) | root cause                                    |
-| 3 | turn-3.json | main   | ❌ BUST @ tok ~#44 | 44 / 105                             | history message mutated at `messages[1].content` |
+```yaml
+# .github/workflows/cache.yml
+- run: npx kvguard check tests/traces/*.jsonl --fail-on-bust --min-hit-rate 0.95 >> "$GITHUB_STEP_SUMMARY"
 ```
 
-### Options
+`check` accepts `.json` request bodies or `.jsonl` traces, expands globs itself, writes a Markdown report and exits `1` on failure:
+
+```
+| # | source      | branch | verdict            | reused / parent prefix | root cause                                        |
+| 3 | turn-3.json | main   | ❌ BUST @ tok ~#44 | 44 / 105               | history message mutated at `messages[1].content` |
+```
+
+## Heal rules — and what they will never do
+
+`--heal` rewrites requests **only in ways that keep their meaning**, and only where it is safe:
+
+- **Tool canonicalization** — sort tools by name and schema keys by RFC 8785. `enum` order and data arrays are never touched.
+- **Billing header** — stripped only for local and third-party backends. The official Anthropic API keeps it.
+- **Timestamps** — ISO-8601 date-times in the system prompt are pinned per session (the model sees the session start time). Bare numbers that could be IDs are never rewritten.
+- **`cache_control` breakpoints** — added only when the client sent none, only on blocks Anthropic accepts, never more than four.
+- **`prompt_cache_key`** — added only for `api.openai.com`, never sent to gateways that may reject unknown fields.
+- **Slot routing** — `id_slot` / `cache_prompt` only for a detected llama-server with two or more slots.
+- **Opt-in rewrites** — `--relocate-git-status` moves Claude Code's `gitStatus:` section to the newest turn and replays it byte-identically on later turns; `--normalize-think-tags` strips historical `<think>` blocks on local backends.
+
+Toggling heal mid-session rebuilds the prefix once — that is expected and shown in the TUI.
+
+## Accuracy, honestly
+
+- **JSON paths, byte offsets and provider usage are exact.** Token indexes are estimates using `o200k_base` — exact for GPT-4o/GPT-5-family, approximate for Claude (tokenizer not public) and local models.
+- **Prices** are built-in list prices; unknown model versions fall back to their family.
+- **Clients must honor base-URL variables.** Cursor sends requests through its own backend, so no local proxy can see them.
+- **Ollama doesn't report reused tokens**, so its hit rate is estimated from the request diff.
+- **Verified against real traffic:** with a local Ollama 0.35 (`qwen2.5:7b-instruct`), a conversation's second turn was classified `HIT` and Ollama reported 1,619 of 1,635 prompt tokens cached.
+
+## Security
+
+The proxy listens on `127.0.0.1` only. Control endpoints (`/__kvguard/*`) reject non-loopback `Host` headers and any browser `Origin`, which blocks DNS-rebinding and CSRF. Redirects are never followed. Recorded traces and exported files contain full prompts — treat them like source code.
+
+## Options
 
 | Flag | Meaning |
 |---|---|
 | `--heal` | Enable heal rules (toggle live with `h`) |
-| `--target URL` | Single upstream for every API family |
+| `--target URL` | Send every API family to one upstream |
 | `--backend auto\|llama-cpp\|ollama\|generic` | Upstream type; `auto` probes llama-server `/props` and `/slots` |
-| `--slots N` | llama-server slot count override |
-| `--relocate-git-status` | Move Claude Code's `gitStatus:` section from the system prompt to the newest turn (replayed byte-identically on later turns) |
-| `--normalize-think-tags` | Strip `<think>` / `reasoning_content` from historical assistant turns (local backends only) |
-| `--chat-template FILE` | `.jinja` or `tokenizer_config.json` used to detect template drift |
-| `--record FILE` | Append forwarded request bodies to a JSONL file |
-| `--prefill-tps N` | Reference prefill speed until llama-server timings calibrate it (default 850) |
-
-## How it works
-
-```
-client ──► axum handler ─┬─ heal prefix rules (tools JCS, header strip, timestamp pin, …)
-                         ├─ block hashing (xxh64 per tool / system part / message)
-                         ├─ lineage tree: continuation | mutation | new branch
-                         ├─ routing hints (cache_control, prompt_cache_key, id_slot)
-                         └─ forward ──► upstream
-upstream ──► UsageTap (relays every chunk immediately, parses usage on the side) ──► client
-background ─► token diff (o200k) + JSON-AST diff + chat-template render ─► monitor ─► TUI / attach / summary
-```
-
-Inline work is hashing and comparisons only; tokenization and diffing run off the request path, and response bodies are streamed chunk by chunk, so time-to-first-token is unchanged.
-
-## Accuracy and safety notes
-
-- **Token positions are estimates.** kvguard counts with OpenAI's `o200k_base`. That is exact for GPT-4o/GPT-5-family models and approximate for Claude (whose tokenizer is not public) and local models. JSON paths and byte offsets are exact; dollar and hit-rate figures from provider `usage` fields are exact; everything labeled "est." is not.
-- **The billing header is only stripped for non-Anthropic backends.** The official API uses it; local servers hash it into the KV prefix.
-- **Breakpoints are only added when the client sent none**, so client-managed caching is never overridden and the 4-breakpoint limit can't be exceeded. Adding breakpoints costs cache writes (1.25× on Anthropic).
-- **Toggling heal mid-session rebuilds the prefix once** (the request shape changes).
-- **Pinned timestamps mean the model sees the session start time**, not the current time.
-- **Prices** are list prices per million input tokens, built into the binary; unknown model versions fall back to their family.
-- **Clients that don't honor base-URL variables can't be intercepted.** Cursor sends requests through its own backend, so a local proxy never sees them.
-- **Ollama does not report reused tokens**, so its hit rate is estimated from the request diff.
-- The control endpoints (`/__kvguard/state`, `/__kvguard/heal`) and the proxy listen on loopback only. Recorded traces and exported files contain full prompts; treat them like source code.
+| `--slots N` | Override the llama-server slot count |
+| `--relocate-git-status` · `--normalize-think-tags` | Opt-in rewrites (see above) |
+| `--chat-template FILE` | `.jinja` or `tokenizer_config.json` for template-drift detection |
+| `--record FILE` | Append forwarded requests to JSONL (input for `check`) |
+| `--no-tui` | One line per request instead of the full-screen TUI |
+| `--port N` · `--prefill-tps N` | Listen port (default 4141) · reference prefill speed (default 850) |
 
 ## Compared to
 
-| Tool | Approach | kvguard difference |
+| | Approach | kvguard |
 |---|---|---|
-| caching.ai | Docker + Postgres + web console | single binary, local backends, token-level diff |
+| caching.ai | Docker + Postgres + web console | one binary, local backends, token-level diff |
 | CacheLint | static analysis | runtime: sees the prefixes your agent actually sends |
+| cachebench | SDK-side observability library | drop-in proxy: no code changes, any client, plus healing |
 | contextio | raw request logs via mitmproxy | branch-aware diffing and in-flight healing |
-| claude-code-cache-fix, ccstatusline | Claude Code–specific | any Anthropic/OpenAI/Ollama-compatible client |
+| claude-code-cache-fix · ccstatusline | Claude Code–specific | Anthropic, OpenAI, llama.cpp, Ollama |
+
+## Roadmap
+
+Next up: **provider-truth cost accounting**, **partial-cache-read ("collapse") detection** for prefixes that are intact but only partly cached, **model-aware cache rules** (minimum sizes, Anthropic's 20-block lookback), **TTL-aware pricing**, exact local tokenization via llama-server, and a Prometheus endpoint. See [the analysis and roadmap](docs/kvguard-problem-analysis-and-roadmap.md).
 
 ## Development
 
 ```bash
-cargo test                           # unit tests + 5 end-to-end tests (wiremock upstream)
+cargo test                                   # unit + end-to-end tests against a wiremock upstream
 cargo clippy --all-targets -- -D warnings
-vhs demo/kvguard.tape                # regenerate the demo GIF
 ```
+
+CI runs formatting, clippy, tests on Linux/macOS/Windows and an MSRV (1.88) check on every pull request. Tagging `v*` builds and publishes binaries for five targets.
 
 ## License
 
