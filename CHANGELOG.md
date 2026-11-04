@@ -3,6 +3,13 @@
 kvguard follows [Semantic Versioning](https://semver.org/). While it is 0.x, minor releases may
 change CLI flags, metric names and JSON fields; such changes are listed under **Changed**.
 
+## Unreleased
+
+### Fixed
+- Standalone `kvguard` (TUI or `--no-tui`) writes the attach file, so `kvguard status` and
+  `kvguard attach` find its control token instead of failing with 403.
+- `--no-tui` prints a turn again when provider usage changes its status (e.g. HIT → PARTIAL).
+
 ## 0.3.1 — 2026-11-04
 
 ### Added
