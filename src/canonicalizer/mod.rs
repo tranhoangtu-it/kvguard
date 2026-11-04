@@ -51,7 +51,9 @@ impl Healer {
         if backend != Backend::AnthropicCloud {
             actions.extend(sanitizer::strip_billing_headers(api, body));
         }
-        actions.extend(self.pin_timestamps(api, body));
+        if opts.pin_timestamps {
+            actions.extend(self.pin_timestamps(api, body));
+        }
         if opts.relocate_git_status {
             actions.extend(self.relocate_git_status(api, body));
         }
@@ -182,6 +184,7 @@ mod tests {
 
     fn opts() -> HealOptions {
         HealOptions {
+            pin_timestamps: true,
             relocate_git_status: true,
             normalize_think_tags: false,
         }

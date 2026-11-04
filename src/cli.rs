@@ -50,6 +50,9 @@ pub struct StatusArgs {
     /// Proxy URL (default: the most recent wrapper, else http://127.0.0.1:4141).
     #[arg(long)]
     pub url: Option<String>,
+    /// Control token (default: read from the wrapper's attach file).
+    #[arg(long, env = "KVGUARD_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
     /// One compact line; prints `kvguard off` (exit 0) when no proxy is running.
     #[arg(long)]
     pub line: bool,
@@ -58,10 +61,15 @@ pub struct StatusArgs {
 /// Heal-rule flags shared by the proxy and `check`.
 #[derive(Debug, Clone, Args)]
 pub struct HealArgs {
+    /// Pin ISO-8601 times in the system prompt to the session start (the model then sees
+    /// the start time, not the current time).
+    #[arg(long)]
+    pub pin_timestamps: bool,
     /// Move a volatile `gitStatus:` section from the system prompt to the newest turn.
     #[arg(long)]
     pub relocate_git_status: bool,
-    /// Strip `<think>` blocks from historical assistant turns (local Qwen/DeepSeek models).
+    /// Strip `<think>` blocks from assistant turns before the latest user message
+    /// (local Qwen/DeepSeek models).
     #[arg(long)]
     pub normalize_think_tags: bool,
 }
@@ -69,6 +77,7 @@ pub struct HealArgs {
 impl HealArgs {
     fn options(&self) -> HealOptions {
         HealOptions {
+            pin_timestamps: self.pin_timestamps,
             relocate_git_status: self.relocate_git_status,
             normalize_think_tags: self.normalize_think_tags,
         }
@@ -77,9 +86,17 @@ impl HealArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct ProxyArgs {
-    /// Rewrite requests to keep the cache prefix stable (toggle live with `h` in the TUI).
+    /// Apply the safe heal rules (tool ordering, schema key order, cache hints, slot routing;
+    /// billing header removed on non-Anthropic backends). Toggle live with `h` in the TUI.
     #[arg(long)]
     pub heal: bool,
+    /// Token required by the control endpoints (`/__kvguard/*`); random when unset.
+    #[arg(long, env = "KVGUARD_TOKEN", hide_env_values = true)]
+    pub control_token: Option<String>,
+    /// JSON file overriding list prices: {"model-substring": {"input": 3.0,
+    /// "cache_write": 3.75, "cache_read": 0.3}} in USD per million tokens.
+    #[arg(long)]
+    pub prices: Option<PathBuf>,
     /// Listen port on 127.0.0.1 (default: 4141, or a free port when 4141 is busy).
     #[arg(long, env = "KVGUARD_PORT")]
     pub port: Option<u16>,
@@ -124,6 +141,7 @@ impl ProxyArgs {
         config.prefill_tok_per_sec = self.prefill_tps;
         config.record = self.record.clone();
         config.partial_threshold = self.partial_threshold;
+        config.control_token = self.control_token.clone();
         config
     }
 }
@@ -148,6 +166,9 @@ pub struct CheckArgs {
     /// Chat template to verify rendered prompts for local models.
     #[arg(long)]
     pub chat_template: Option<PathBuf>,
+    /// JSON file overriding list prices (same format as the proxy's `--prices`).
+    #[arg(long)]
+    pub prices: Option<PathBuf>,
     #[command(flatten)]
     pub heal_rules: HealArgs,
 }
@@ -171,6 +192,9 @@ pub struct AttachArgs {
     /// Proxy URL (default: the most recent wrapper, else http://127.0.0.1:4141).
     #[arg(long)]
     pub url: Option<String>,
+    /// Control token (default: read from the wrapper's attach file).
+    #[arg(long, env = "KVGUARD_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
 }
 
 #[cfg(test)]

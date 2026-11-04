@@ -11,5 +11,6 @@ pub mod monitor;
 pub mod pricing;
 pub mod provider;
 pub mod proxy;
+pub mod secure_file;
 pub mod tui;
 pub mod wrapper;

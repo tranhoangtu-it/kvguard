@@ -3,8 +3,34 @@
 //! Prices are list prices in USD per million input tokens and are estimates: provider
 //! pricing changes, and unknown model versions fall back to their family's price.
 
+use std::path::Path;
+use std::sync::OnceLock;
+
+use anyhow::{Context, Result};
+
+/// User-supplied prices from `--prices`, matched before the built-in table.
+static OVERRIDES: OnceLock<Vec<(String, Price)>> = OnceLock::new();
+
+/// Load `{"model-substring": {"input": …, "cache_write": …, "cache_read": …}}` (USD per
+/// million tokens). Returns the number of entries. Only the first call takes effect.
+pub fn load_overrides(path: &Path) -> Result<usize> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read prices file {}", path.display()))?;
+    let parsed: std::collections::BTreeMap<String, Price> = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid prices file {}", path.display()))?;
+    let mut entries: Vec<(String, Price)> = parsed
+        .into_iter()
+        .map(|(pattern, price)| (pattern.to_ascii_lowercase(), price))
+        .collect();
+    // Longest pattern first, so "claude-opus-4-1" wins over "opus".
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
+    let count = entries.len();
+    let _ = OVERRIDES.set(entries);
+    Ok(count)
+}
+
 /// Per-million-token input prices.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 pub struct Price {
     pub input: f64,
     /// Price of writing a token into the cache (Anthropic charges a premium; OpenAI does not).
@@ -57,6 +83,15 @@ const PRICE_TABLE: &[(&str, Price)] = &[
 /// Look up a price by model id (case-insensitive substring match).
 pub fn price_for(model: &str) -> Option<Price> {
     let model = model.to_ascii_lowercase();
+    let overridden = OVERRIDES.get().and_then(|entries| {
+        entries
+            .iter()
+            .find(|(pattern, _)| model.contains(pattern.as_str()))
+            .map(|(_, price)| *price)
+    });
+    if overridden.is_some() {
+        return overridden;
+    }
     PRICE_TABLE
         .iter()
         .find(|(pattern, _)| model.contains(pattern))
