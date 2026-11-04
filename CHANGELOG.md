@@ -3,19 +3,23 @@
 kvguard follows [Semantic Versioning](https://semver.org/). While it is 0.x, minor releases may
 change CLI flags, metric names and JSON fields; such changes are listed under **Changed**.
 
-## Unreleased
-
-### Fixed
-- Standalone `kvguard` (TUI or `--no-tui`) writes the attach file, so `kvguard status` and
-  `kvguard attach` find its control token instead of failing with 403.
-- `--no-tui` prints a turn again when provider usage changes its status (e.g. HIT → PARTIAL).
-
-## 0.3.1 — 2026-11-04
+## 0.3.2 — 2026-11-04
 
 ### Added
 - Homebrew: `brew install tranhoangtu-it/tap/kvguard`; the release workflow renders the
   formula from the release checksums, test-installs it on macOS and pushes it to the tap.
 - First PyPI release (`pip install kvguard` / `uvx kvguard`).
+
+### Fixed
+- Standalone `kvguard` (TUI or `--no-tui`) writes the attach file, so `kvguard status` and
+  `kvguard attach` find its control token instead of failing with 403.
+- `--no-tui` prints a turn again when provider usage changes its status (e.g. HIT → PARTIAL).
+- Release: both macOS binaries build on one runner (the separate arm64 job kept being
+  cancelled for lack of hosted capacity, which blocked v0.3.1).
+
+## 0.3.1 — not released
+
+Tagged, but the release build never got a macOS arm64 runner; its changes ship in 0.3.2.
 
 ## 0.3.0 — 2026-11-04
 

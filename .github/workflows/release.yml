@@ -22,8 +22,9 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, cross: true }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, cross: true }
-          - { target: x86_64-apple-darwin, os: macos-latest, cross: false }
-          - { target: aarch64-apple-darwin, os: macos-latest, cross: false }
+          # Both macOS targets build on one runner: a separate arm64 job was repeatedly
+          # cancelled for lack of hosted macOS arm64 capacity.
+          - { target: x86_64-apple-darwin, also: aarch64-apple-darwin, os: macos-latest, cross: false }
           - { target: x86_64-pc-windows-msvc, os: windows-latest, cross: false }
     runs-on: ${{ matrix.os }}
     steps:
@@ -41,27 +42,31 @@ jobs:
         if: ${{ !matrix.cross }}
         shell: bash
         run: |
-          rustup target add ${{ matrix.target }}
-          cargo build --locked --release --target ${{ matrix.target }}
+          for target in ${{ matrix.target }} ${{ matrix.also }}; do
+            rustup target add "$target"
+            cargo build --locked --release --target "$target"
+          done
 
       - name: Package
         shell: bash
         run: |
-          name="kvguard-${GITHUB_REF_NAME//\//-}-${{ matrix.target }}"
-          dir="target/${{ matrix.target }}/release"
           mkdir -p dist
-          if [[ "${{ matrix.target }}" == *windows* ]]; then
-            7z a "dist/$name.zip" "./$dir/kvguard.exe" README.md LICENSE-MIT LICENSE-APACHE
-            asset="dist/$name.zip"
-          else
-            tar -czf "dist/$name.tar.gz" -C "$dir" kvguard -C "$GITHUB_WORKSPACE" README.md LICENSE-MIT LICENSE-APACHE
-            asset="dist/$name.tar.gz"
-          fi
-          if command -v sha256sum >/dev/null; then
-            sha256sum "$asset" | sed 's#dist/##' > "$asset.sha256"
-          else
-            shasum -a 256 "$asset" | sed 's#dist/##' > "$asset.sha256"
-          fi
+          for target in ${{ matrix.target }} ${{ matrix.also }}; do
+            name="kvguard-${GITHUB_REF_NAME//\//-}-$target"
+            dir="target/$target/release"
+            if [[ "$target" == *windows* ]]; then
+              7z a "dist/$name.zip" "./$dir/kvguard.exe" README.md LICENSE-MIT LICENSE-APACHE
+              asset="dist/$name.zip"
+            else
+              tar -czf "dist/$name.tar.gz" -C "$dir" kvguard -C "$GITHUB_WORKSPACE" README.md LICENSE-MIT LICENSE-APACHE
+              asset="dist/$name.tar.gz"
+            fi
+            if command -v sha256sum >/dev/null; then
+              sha256sum "$asset" | sed 's#dist/##' > "$asset.sha256"
+            else
+              shasum -a 256 "$asset" | sed 's#dist/##' > "$asset.sha256"
+            fi
+          done
 
       - name: Attest build provenance
         if: startsWith(github.ref, 'refs/tags/v')
