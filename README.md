@@ -17,6 +17,8 @@ One ~6 MB binary. No Docker, no database, no account, no telemetry.
 npx kvguard -- claude
 ```
 
+<p><img src="assets/quickstart-demo.svg" alt="kvguard quickstart demo" width="820"></p>
+
 </div>
 
 ---

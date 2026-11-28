@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="290" viewBox="0 0 820 290" role="img" aria-label="kvguard quickstart demo">
+  <rect width="820" height="290" rx="12" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+  <rect width="820" height="36" rx="12" fill="#161b22"/>
+  <rect y="24" width="820" height="12" fill="#161b22"/>
+  <circle cx="22" cy="18" r="6" fill="#ff5f56"/>
+  <circle cx="42" cy="18" r="6" fill="#ffbd2e"/>
+  <circle cx="62" cy="18" r="6" fill="#27c93f"/>
+  <text x="410" y="23" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">kvguard — prompt/KV cache prefix inspector</text>
+  <text x="24" y="68" fill="#79c0ff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">$ npx kvguard -- claude</text>
+  <text x="24" y="102" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">  kvguard · http://127.0.0.1:4141  |  CACHE HIT 97.4%  |  1.42M tok saved ($4.82)</text>
+  <text x="24" y="136" fill="#7ee787" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">  #03  main   claude-sonnet-4-5  [██████████]  98%  HIT</text>
+  <text x="24" y="166" fill="#f85149" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">  #04  main   claude-sonnet-4-5  [█░░░░░░░░░]  12%  BUST @ tok ~#418 · system[1].text</text>
+  <text x="24" y="196" fill="#ffa657" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">       └─ volatile timestamp in prefix (-$0.142) · heal with: npx kvguard --heal -- claude</text>
+  <text x="24" y="242" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">Anthropic · OpenAI · llama.cpp · Ollama · single ~6 MB binary · zero telemetry</text>
+</svg>
