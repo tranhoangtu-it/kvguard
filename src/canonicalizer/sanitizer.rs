@@ -109,15 +109,27 @@ pub fn for_each_system_text(api: ApiKind, body: &mut Value, mut f: impl FnMut(&m
                 }
             }
         }
+        ApiKind::GeminiGenerateContent => {
+            for key in ["systemInstruction", "system_instruction"] {
+                if let Some(sys) = body.get_mut(key) {
+                    if let Some(Value::String(s)) = sys.get_mut("text") {
+                        f(s);
+                    }
+                    if let Some(Value::Array(parts)) = sys.get_mut("parts") {
+                        parts.iter_mut().for_each(|p| visit_text_part(p, &mut f));
+                    }
+                }
+            }
+        }
     }
 }
 
 /// Name of the conversation array for an API family.
 pub fn conversation_key(api: ApiKind) -> &'static str {
-    if api == ApiKind::OpenAiResponses {
-        "input"
-    } else {
-        "messages"
+    match api {
+        ApiKind::OpenAiResponses => "input",
+        ApiKind::GeminiGenerateContent => "contents",
+        ApiKind::AnthropicMessages | ApiKind::OpenAiChat | ApiKind::OllamaChat => "messages",
     }
 }
 
@@ -204,6 +216,10 @@ pub fn take_git_status(api: ApiKind, body: &mut Value) -> Option<String> {
 
 /// Append `extra` text to a message's content (string or content-part array).
 pub fn append_to_message(message: &mut Value, extra: &str, api: ApiKind) {
+    if let Some(Value::Array(parts)) = message.get_mut("parts") {
+        parts.push(serde_json::json!({"text": extra}));
+        return;
+    }
     match message.get_mut("content") {
         Some(Value::String(s)) => {
             s.push_str("\n\n");

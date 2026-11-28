@@ -9,7 +9,7 @@ use bytes::Bytes;
 use futures_util::Stream;
 use serde_json::Value;
 
-use super::{anthropic, local_llm, openai};
+use super::{anthropic, gemini, local_llm, openai};
 use crate::monitor::Usage;
 use crate::provider::ApiKind;
 
@@ -163,6 +163,7 @@ impl UsageCollector {
                 local_llm::merge_llama_timings(event, &mut self.usage);
             }
             ApiKind::OllamaChat => local_llm::merge_ollama(event, &mut self.usage),
+            ApiKind::GeminiGenerateContent => gemini::merge_usage(event, &mut self.usage),
         }
         self.found |= self.usage != before;
     }

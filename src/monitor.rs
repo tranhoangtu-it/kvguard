@@ -611,7 +611,10 @@ fn expected_from_parent(
             let cached = usage.cached_tokens.unwrap_or(0) + usage.cache_write_tokens.unwrap_or(0);
             (cached > 0).then_some(cached)
         }
-        ApiKind::OpenAiChat | ApiKind::OpenAiResponses | ApiKind::OllamaChat => usage.prompt_tokens,
+        ApiKind::OpenAiChat
+        | ApiKind::OpenAiResponses
+        | ApiKind::OllamaChat
+        | ApiKind::GeminiGenerateContent => usage.prompt_tokens,
     }
 }
 

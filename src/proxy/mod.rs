@@ -4,6 +4,7 @@
 //! routing hints → forward. Off the request path: token counting and diagnosis.
 
 pub mod anthropic;
+pub mod gemini;
 pub mod local_llm;
 pub mod openai;
 pub mod passthrough;
@@ -84,6 +85,10 @@ fn cloud_backend(base: &str) -> Backend {
         Backend::AnthropicCloud
     } else if base.contains("api.openai.com") {
         Backend::OpenAiCloud
+    } else if base.contains("generativelanguage.googleapis.com")
+        || base.contains("aiplatform.googleapis.com")
+    {
+        Backend::GeminiCloud
     } else {
         Backend::HostedCloud
     }
@@ -379,12 +384,14 @@ impl AppState {
         };
         self.record(path, &value);
 
-        let mut record = TurnRecord::new(
-            api,
-            snapshot.model.clone(),
-            outcome.branch_label.clone(),
-            outcome.kind,
-        );
+        let model = if snapshot.model.is_empty() {
+            crate::provider::model_from_path(path)
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            snapshot.model.clone()
+        };
+        let mut record = TurnRecord::new(api, model, outcome.branch_label.clone(), outcome.kind);
         record.slot = outcome.slot.filter(|_| heal);
         record.local = backend.is_local();
         record.heal_actions = actions;
@@ -704,6 +711,10 @@ mod tests {
         assert_eq!(
             cloud_backend("https://api.openai.com"),
             Backend::OpenAiCloud
+        );
+        assert_eq!(
+            cloud_backend("https://generativelanguage.googleapis.com"),
+            Backend::GeminiCloud
         );
         assert_eq!(
             cloud_backend("https://openrouter.ai/api"),

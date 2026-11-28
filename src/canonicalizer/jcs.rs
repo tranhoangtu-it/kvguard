@@ -13,11 +13,23 @@ pub fn canonicalize_tools(body: &mut Value) -> Option<String> {
 
     tools.sort_by(|a, b| tool_name(a).cmp(tool_name(b)));
     for tool in tools.iter_mut() {
+        canonicalize_gemini_declarations(tool);
         canonicalize_tool_schemas(tool);
     }
 
     let after = serde_json::to_string(tools).ok()?;
     (before != after).then(|| format!("sorted {} tools", tools.len()))
+}
+
+fn canonicalize_gemini_declarations(tool: &mut Value) {
+    for key in ["functionDeclarations", "function_declarations"] {
+        if let Some(decls) = tool.get_mut(key).and_then(Value::as_array_mut) {
+            decls.sort_by(|a, b| tool_name(a).cmp(tool_name(b)));
+            for decl in decls.iter_mut() {
+                canonicalize_tool_schemas(decl);
+            }
+        }
+    }
 }
 
 /// Tool name for Anthropic (`name`), OpenAI Responses (`name`) and Chat (`function.name`).
@@ -29,7 +41,12 @@ pub fn tool_name(tool: &Value) -> &str {
 }
 
 fn canonicalize_tool_schemas(tool: &mut Value) {
-    for pointer in ["/input_schema", "/parameters", "/function/parameters"] {
+    for pointer in [
+        "/input_schema",
+        "/parameters",
+        "/parametersJsonSchema",
+        "/function/parameters",
+    ] {
         if let Some(schema) = tool.pointer_mut(pointer) {
             *schema = canonical_schema(schema);
         }
@@ -98,5 +115,19 @@ mod tests {
     fn already_canonical_tools_report_no_change() {
         let mut body = json!({"tools": [{"name": "a", "input_schema": {"type": "object"}}]});
         assert!(canonicalize_tools(&mut body).is_none());
+    }
+
+    #[test]
+    fn sorts_gemini_function_declarations_and_parameters() {
+        let mut body = json!({"tools": [{"functionDeclarations": [
+            {"name": "zeta", "parameters": {"type": "object", "required": ["z", "a"]}},
+            {"name": "alpha", "parameters": {"type": "object"}}
+        ]}]});
+        assert!(canonicalize_tools(&mut body).is_some());
+        assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "alpha");
+        let schema =
+            serde_json::to_string(&body["tools"][0]["functionDeclarations"][1]["parameters"])
+                .unwrap();
+        assert_eq!(schema, r#"{"required":["a","z"],"type":"object"}"#);
     }
 }

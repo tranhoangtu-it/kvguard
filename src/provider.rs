@@ -22,6 +22,10 @@ pub enum ApiKind {
     #[value(name = "ollama")]
     #[serde(rename = "ollama")]
     OllamaChat,
+    /// Google Gemini `:generateContent` / `:streamGenerateContent`.
+    #[value(name = "gemini")]
+    #[serde(rename = "gemini")]
+    GeminiGenerateContent,
 }
 
 impl ApiKind {
@@ -32,6 +36,7 @@ impl ApiKind {
             Self::OpenAiChat | Self::OllamaChat => 0,
             Self::AnthropicMessages => 1,
             Self::OpenAiResponses => 2,
+            Self::GeminiGenerateContent => 3,
         };
         family(self) == family(other)
     }
@@ -47,6 +52,8 @@ impl ApiKind {
             Some(Self::OpenAiResponses)
         } else if path.ends_with("/api/chat") {
             Some(Self::OllamaChat)
+        } else if path.ends_with(":generateContent") || path.ends_with(":streamGenerateContent") {
+            Some(Self::GeminiGenerateContent)
         } else {
             None
         }
@@ -58,11 +65,18 @@ impl ApiKind {
             Self::OpenAiChat => "openai-chat",
             Self::OpenAiResponses => "openai-responses",
             Self::OllamaChat => "ollama",
+            Self::GeminiGenerateContent => "gemini",
         }
     }
 
     /// Best-effort guess of the API family from a bare request body (used by `kvguard check`).
     pub fn guess_from_body(body: &serde_json::Value) -> Self {
+        if body.get("contents").is_some()
+            || body.get("systemInstruction").is_some()
+            || body.get("system_instruction").is_some()
+        {
+            return Self::GeminiGenerateContent;
+        }
         if body.get("input").is_some() || body.get("instructions").is_some() {
             return Self::OpenAiResponses;
         }
@@ -88,6 +102,17 @@ impl ApiKind {
     }
 }
 
+/// Extract the model id from a Gemini path like `/v1beta/models/gemini-2.5-flash:generateContent`.
+pub fn model_from_path(path: &str) -> Option<&str> {
+    let clean = path.split('?').next().unwrap_or(path);
+    let after_models = clean.rsplit("/models/").next()?;
+    if after_models == clean {
+        return None;
+    }
+    let model = after_models.split(':').next()?.trim();
+    (!model.is_empty()).then_some(model)
+}
+
 /// What kind of server sits behind the upstream URL. Drives which heal rules are safe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +121,8 @@ pub enum Backend {
     AnthropicCloud,
     /// The official OpenAI API (`api.openai.com`).
     OpenAiCloud,
+    /// Google Gemini / Vertex AI hosted API.
+    GeminiCloud,
     /// Any other hosted provider or gateway.
     HostedCloud,
     /// llama.cpp `llama-server` exposing `slots` parallel KV slots.
@@ -152,6 +179,18 @@ mod tests {
             Some(ApiKind::OpenAiResponses)
         );
         assert_eq!(ApiKind::from_path("/api/chat"), Some(ApiKind::OllamaChat));
+        assert_eq!(
+            ApiKind::from_path("/v1beta/models/gemini-2.5-flash:generateContent"),
+            Some(ApiKind::GeminiGenerateContent)
+        );
+        assert_eq!(
+            ApiKind::from_path("/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"),
+            Some(ApiKind::GeminiGenerateContent)
+        );
+        assert_eq!(
+            model_from_path("/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"),
+            Some("gemini-2.5-flash")
+        );
         assert_eq!(ApiKind::from_path("/v1/models"), None);
     }
 

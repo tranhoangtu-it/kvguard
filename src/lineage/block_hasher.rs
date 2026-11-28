@@ -59,6 +59,12 @@ pub fn strip_cache_control(value: &Value) -> Value {
 
 /// Decompose a request body into prompt-ordered blocks.
 pub fn decompose(api: ApiKind, body: &Value) -> Vec<ContextBlock> {
+    if api == ApiKind::GeminiGenerateContent {
+        let mut blocks = gemini_tool_blocks(body);
+        blocks.extend(gemini_system_blocks(body));
+        blocks.extend(array_blocks(body, "contents", role_kind));
+        return blocks;
+    }
     let mut blocks = array_blocks(body, "tools", |_| BlockKind::Tool);
     match api {
         ApiKind::AnthropicMessages => {
@@ -86,6 +92,7 @@ pub fn decompose(api: ApiKind, body: &Value) -> Vec<ContextBlock> {
                 _ => {}
             }
         }
+        ApiKind::GeminiGenerateContent => unreachable!(),
     }
     blocks
 }
@@ -117,6 +124,64 @@ fn anthropic_system_blocks(body: &Value) -> Vec<ContextBlock> {
         }
         Some(Value::Array(_)) => array_blocks(body, "system", |_| BlockKind::System),
         _ => Vec::new(),
+    }
+}
+
+fn gemini_tool_blocks(body: &Value) -> Vec<ContextBlock> {
+    let Some(tools) = body.get("tools").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (i, entry) in tools.iter().enumerate() {
+        let decl_key = if entry.get("functionDeclarations").is_some() {
+            Some("functionDeclarations")
+        } else if entry.get("function_declarations").is_some() {
+            Some("function_declarations")
+        } else {
+            None
+        };
+        if let Some(key) = decl_key
+            && let Some(decls) = entry.get(key).and_then(Value::as_array)
+        {
+            for (j, decl) in decls.iter().enumerate() {
+                out.push(ContextBlock::new(
+                    BlockKind::Tool,
+                    format!("tools[{i}].{key}[{j}]"),
+                    decl,
+                ));
+            }
+        } else {
+            out.push(ContextBlock::new(
+                BlockKind::Tool,
+                format!("tools[{i}]"),
+                entry,
+            ));
+        }
+    }
+    out
+}
+
+fn gemini_system_blocks(body: &Value) -> Vec<ContextBlock> {
+    let key = if body.get("systemInstruction").is_some() {
+        "systemInstruction"
+    } else if body.get("system_instruction").is_some() {
+        "system_instruction"
+    } else {
+        return Vec::new();
+    };
+    let Some(sys) = body.get(key) else {
+        return Vec::new();
+    };
+    if let Some(parts) = sys.get("parts").and_then(Value::as_array) {
+        parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| ContextBlock::new(BlockKind::System, format!("{key}.parts[{i}]"), p))
+            .collect()
+    } else if !sys.is_null() {
+        vec![ContextBlock::new(BlockKind::System, key.into(), sys)]
+    } else {
+        Vec::new()
     }
 }
 
@@ -169,5 +234,24 @@ mod tests {
         let blocks = decompose(ApiKind::OpenAiChat, &body);
         assert_eq!(blocks[0].kind, BlockKind::System);
         assert_eq!(blocks[1].kind, BlockKind::Message);
+    }
+
+    #[test]
+    fn gemini_decomposes_function_declarations_system_and_contents() {
+        let body = json!({
+            "tools": [{"functionDeclarations": [
+                {"name": "read_file", "description": "Read a file"},
+                {"name": "search", "description": "Search"}
+            ]}],
+            "systemInstruction": {"parts": [{"text": "Be concise"}]},
+            "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
+        });
+        let blocks = decompose(ApiKind::GeminiGenerateContent, &body);
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(blocks[0].path, "tools[0].functionDeclarations[0]");
+        assert_eq!(blocks[1].kind, BlockKind::Tool);
+        assert_eq!(blocks[2].kind, BlockKind::System);
+        assert_eq!(blocks[2].path, "systemInstruction.parts[0]");
+        assert_eq!(blocks[3].kind, BlockKind::Message);
     }
 }

@@ -10,7 +10,7 @@
 [![PyPI](https://img.shields.io/pypi/v/kvguard?color=3775a9&logo=pypi&logoColor=white)](https://pypi.org/project/kvguard/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-**Anthropic · OpenAI · llama.cpp · Ollama · any OpenAI-compatible server**<br>
+**Anthropic · OpenAI · Google Gemini · llama.cpp · Ollama · any OpenAI-compatible server**<br>
 One ~6 MB binary. No Docker, no database, no account, no telemetry.
 
 ```bash

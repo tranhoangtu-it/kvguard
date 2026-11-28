@@ -86,6 +86,7 @@ impl Healer {
         let can_carry = body.get(key)?.as_array()?.last().is_some_and(|m| {
             is_role(m, &["user", "tool"])
                 && m.get("content")
+                    .or_else(|| m.get("parts"))
                     .is_some_and(|c| c.is_string() || c.is_array())
         });
         if !can_carry {
